@@ -590,25 +590,29 @@ export function TradeLogger() {
                   <div className="grid gap-2 text-sm text-muted">
                     <div>Missing required columns: {brokerPreview.missingColumns.length ? brokerPreview.missingColumns.join(", ") : "None"}</div>
                     <div>Missing fields: {brokerPreview.summary.missingFieldCounts.map((item) => `${item.field}: ${item.count}`).join(", ") || "None"}</div>
+                    <div>Rows with warnings: {brokerPreview.candidates.filter((candidate) => candidate.warnings.length).length}</div>
                   </div>
                 </div>
               </div>
               <div className="overflow-x-auto rounded-lg border border-stroke">
-                <table className="w-full min-w-[1320px] text-left text-sm">
+                <table className="w-full min-w-[1780px] text-left text-sm">
                   <thead className="bg-canvas text-xs uppercase text-muted">
                     <tr>
                       <th className="px-3 py-2 font-medium">Row</th>
                       <th className="px-3 py-2 font-medium">Account</th>
                       <th className="px-3 py-2 font-medium">Broker Symbol</th>
                       <th className="px-3 py-2 font-medium">Normalized</th>
+                      <th className="px-3 py-2 font-medium">Transaction Order</th>
                       <th className="px-3 py-2 font-medium">Direction</th>
                       <th className="px-3 py-2 font-medium">Entry</th>
                       <th className="px-3 py-2 font-medium">Exit</th>
                       <th className="px-3 py-2 font-medium">Entry Time</th>
                       <th className="px-3 py-2 font-medium">Exit Time</th>
                       <th className="px-3 py-2 text-right font-medium">Net PnL</th>
+                      <th className="px-3 py-2 font-medium">PnL Validation</th>
                       <th className="px-3 py-2 font-medium">Result</th>
                       <th className="px-3 py-2 font-medium">R</th>
+                      <th className="px-3 py-2 font-medium">Warning</th>
                       <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
                   </thead>
@@ -619,14 +623,22 @@ export function TradeLogger() {
                         <td className="px-3 py-2 text-muted">{candidate.payload.account ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.broker_symbol ?? candidate.payload.instrument}</td>
                         <td className="px-3 py-2 font-medium text-ink">{candidate.payload.instrument}</td>
-                        <td className="px-3 py-2 text-muted" title={candidate.directionInference}>{candidate.payload.direction}</td>
+                        <td className="px-3 py-2 text-muted">{candidate.transactionOrder}</td>
+                        <td className="px-3 py-2 text-muted">
+                          <div className="font-medium text-ink">{candidate.inferredDirection ?? copy.notAvailable}</div>
+                          <div className="mt-1 max-w-48 text-xs">{candidate.directionInference}</div>
+                        </td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.entry_price ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.exit_price ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.entry_time ? new Date(candidate.payload.entry_time).toLocaleString() : copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.exit_time ? new Date(candidate.payload.exit_time).toLocaleString() : copy.notAvailable}</td>
                         <td className="px-3 py-2 text-right text-muted">{candidate.payload.net_pnl ?? copy.notAvailable}</td>
+                        <td className="px-3 py-2 text-muted" title={candidate.pnlValidationDetail}>{candidate.pnlValidation}</td>
                         <td className="px-3 py-2 font-medium text-ink">{candidate.payload.result}</td>
                         <td className="px-3 py-2 text-muted">{formatNullableR(candidate.payload.result_r, copy.notAvailable)}</td>
+                        <td className="max-w-64 px-3 py-2 text-muted">
+                          {candidate.warnings.length ? candidate.warnings.join(" ") : copy.notAvailable}
+                        </td>
                         <td className="px-3 py-2 text-muted">
                           {candidate.duplicate ? candidate.duplicateReason : candidate.errors.length ? candidate.errors.join(", ") : "Ready"}
                         </td>

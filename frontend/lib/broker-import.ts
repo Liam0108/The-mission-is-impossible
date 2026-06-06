@@ -34,7 +34,12 @@ export type BrokerImportCandidate = {
   fingerprint: string;
   duplicate: boolean;
   duplicateReason: string | null;
+  transactionOrder: "Buy first" | "Sell first" | "Unknown" | "Not applicable";
+  inferredDirection: "Long" | "Short" | null;
   directionInference: string;
+  pnlValidation: "Matched" | "Mismatch" | "Unavailable" | "Not applicable";
+  pnlValidationDetail: string;
+  warnings: string[];
   missingFields: string[];
   errors: string[];
 };
@@ -230,7 +235,7 @@ const FUTURES_POINT_VALUES: Record<string, number> = {
   GC: 100
 };
 
-function inferTradovateDirection({
+function inspectTradovateClosedTrade({
   brokerSymbol,
   instrument,
   quantity,
@@ -249,40 +254,78 @@ function inferTradovateDirection({
   boughtTime: Date | null;
   soldTime: Date | null;
 }) {
-  if (buyPrice !== null && sellPrice !== null && pnl !== null && quantity !== null && quantity !== 0 && instrument) {
-    const pointValue = brokerSymbol.toUpperCase().replace(/[^A-Z0-9]/g, "").startsWith("MGC")
-      ? 10
-      : FUTURES_POINT_VALUES[instrument];
-    if (pointValue) {
-      const longPnl = (sellPrice - buyPrice) * pointValue * Math.abs(quantity);
-      const shortPnl = (buyPrice - sellPrice) * pointValue * Math.abs(quantity);
-      const longError = Math.abs(longPnl - pnl);
-      const shortError = Math.abs(shortPnl - pnl);
-      if (longError < shortError) {
-        return {
-          direction: "Long" as const,
-          reason: `PnL matched Long (expected ${longPnl.toFixed(2)}, reported ${pnl.toFixed(2)})`
-        };
-      }
-      if (shortError < longError) {
-        return {
-          direction: "Short" as const,
-          reason: `PnL matched Short (expected ${shortPnl.toFixed(2)}, reported ${pnl.toFixed(2)})`
-        };
-      }
-    }
+  const warnings: string[] = [];
+  let transactionOrder: "Buy first" | "Sell first" | "Unknown" = "Unknown";
+  let direction: "Long" | "Short" | null = null;
+
+  if (!boughtTime || !soldTime) {
+    warnings.push("Missing boughtTimestamp or soldTimestamp; direction cannot be inferred.");
+  } else if (boughtTime.getTime() < soldTime.getTime()) {
+    transactionOrder = "Buy first";
+    direction = "Long";
+  } else if (soldTime.getTime() < boughtTime.getTime()) {
+    transactionOrder = "Sell first";
+    direction = "Short";
+  } else {
+    warnings.push("Buy and sell timestamps are identical; direction cannot be inferred.");
   }
 
-  if (buyPrice !== null && sellPrice !== null && pnl !== null && pnl !== 0) {
-    const longMove = sellPrice - buyPrice;
-    const direction: "Long" | "Short" = Math.sign(longMove) === Math.sign(pnl) ? "Long" : "Short";
-    return { direction, reason: `${direction} inferred from price change and PnL sign` };
+  const reason = direction
+    ? `${direction} inferred from timestamp order (${transactionOrder})`
+    : "Direction unavailable because transaction order is unknown";
+
+  if (
+    direction === null
+    || buyPrice === null
+    || sellPrice === null
+    || pnl === null
+    || quantity === null
+    || quantity === 0
+    || !instrument
+  ) {
+    return {
+      direction,
+      transactionOrder,
+      reason,
+      pnlValidation: "Unavailable" as const,
+      pnlValidationDetail: "PnL validation requires direction, prices, quantity, symbol, and reported PnL.",
+      warnings
+    };
   }
-  if (boughtTime && soldTime) {
-    const direction: "Long" | "Short" = boughtTime.getTime() <= soldTime.getTime() ? "Long" : "Short";
-    return { direction, reason: `${direction} inferred from buy/sell timestamp order` };
+
+  const pointValue = brokerSymbol.toUpperCase().replace(/[^A-Z0-9]/g, "").startsWith("MGC")
+    ? 10
+    : FUTURES_POINT_VALUES[instrument];
+  if (!pointValue) {
+    return {
+      direction,
+      transactionOrder,
+      reason,
+      pnlValidation: "Unavailable" as const,
+      pnlValidationDetail: `No point value configured for ${instrument}.`,
+      warnings
+    };
   }
-  return { direction: null, reason: "Direction could not be inferred" };
+
+  // Gross futures PnL is sell proceeds minus buy cost regardless of which transaction came first.
+  const expectedPnl = (sellPrice - buyPrice) * pointValue * Math.abs(quantity);
+  const tolerance = Math.max(1, Math.abs(pnl) * 0.02);
+  const difference = Math.abs(expectedPnl - pnl);
+  const matched = difference <= tolerance;
+  const validationDetail = `${direction} expected ${expectedPnl.toFixed(2)}, reported ${pnl.toFixed(2)}, difference ${difference.toFixed(2)}`;
+  if (!matched) {
+    warnings.push(
+      `Timestamp order implies ${direction}, but PnL validation did not match (${validationDetail}).`
+    );
+  }
+  return {
+    direction,
+    transactionOrder,
+    reason,
+    pnlValidation: matched ? "Matched" as const : "Mismatch" as const,
+    pnlValidationDetail: validationDetail,
+    warnings
+  };
 }
 
 function sessionFromTime(time: Date | null) {
@@ -478,8 +521,8 @@ export function parseBrokerCsv(text: string, existingTrades: Trade[], filename?:
     const boughtTime = parseTime(cell(raw, columnMapping, "bought_time"));
     const soldTime = parseTime(cell(raw, columnMapping, "sold_time"));
     const holdingTimeText = cell(raw, columnMapping, "holding_time_text") || null;
-    const inferred: { direction: "Long" | "Short" | null; reason: string } = isTradovateClosedTrades
-      ? inferTradovateDirection({
+    const inferred = isTradovateClosedTrades
+      ? inspectTradovateClosedTrade({
         brokerSymbol: rawSymbol,
         instrument,
         quantity,
@@ -491,7 +534,11 @@ export function parseBrokerCsv(text: string, existingTrades: Trade[], filename?:
       })
       : {
         direction: normalizeDirection(cell(raw, columnMapping, "direction"), quantity),
-        reason: "Direction read from broker direction column"
+        transactionOrder: "Not applicable" as const,
+        reason: "Direction read from broker direction column",
+        pnlValidation: "Not applicable" as const,
+        pnlValidationDetail: "PnL validation is specific to Tradovate Closed Trades.",
+        warnings: []
       };
     const direction = inferred.direction;
     const entryTime = isTradovateClosedTrades
@@ -584,7 +631,12 @@ export function parseBrokerCsv(text: string, existingTrades: Trade[], filename?:
       fingerprint,
       duplicate: tradeIdDuplicate || fingerprintDuplicate,
       duplicateReason: tradeIdDuplicate ? "trade_id already imported" : fingerprintDuplicate ? "matching broker trade already imported" : null,
+      transactionOrder: inferred.transactionOrder,
+      inferredDirection: direction,
       directionInference: inferred.reason,
+      pnlValidation: inferred.pnlValidation,
+      pnlValidationDetail: inferred.pnlValidationDetail,
+      warnings: inferred.warnings,
       missingFields,
       errors
     };

@@ -35,10 +35,17 @@ test("parses Tradovate Closed Trades rows without creating NoTrade or zero R", (
   );
 
   const expectedPnls = [156, 231, 131, 540];
+  const expectedEntries = [30228, 30206.75, 30181.75, 30205.75];
+  const expectedExits = [30189, 30149, 30149, 30138.25];
   preview.candidates.forEach((candidate, index) => {
     assert.equal(candidate.payload.instrument, "MNQ");
     assert.equal(candidate.payload.broker_symbol, "MNQM6");
-    assert.equal(candidate.payload.direction, "Long");
+    assert.equal(candidate.transactionOrder, "Sell first");
+    assert.equal(candidate.inferredDirection, "Short");
+    assert.equal(candidate.payload.direction, "Short");
+    assert.equal(candidate.payload.entry_price, expectedEntries[index]);
+    assert.equal(candidate.payload.exit_price, expectedExits[index]);
+    assert.ok(new Date(candidate.payload.entry_time).getTime() < new Date(candidate.payload.exit_time).getTime());
     assert.equal(candidate.payload.result, "TP1");
     assert.equal(candidate.payload.gross_pnl, expectedPnls[index]);
     assert.equal(candidate.payload.net_pnl, expectedPnls[index]);
@@ -49,14 +56,16 @@ test("parses Tradovate Closed Trades rows without creating NoTrade or zero R", (
     assert.equal(candidate.payload.data_quality, "incomplete");
     assert.notEqual(candidate.payload.result, "NoTrade");
     assert.match(candidate.payload.broker_trade_id, /^tradovate-[a-f0-9]{16}$/);
-    assert.match(candidate.directionInference, /PnL matched Long/);
+    assert.match(candidate.directionInference, /Short inferred from timestamp order/);
+    assert.equal(candidate.pnlValidation, "Matched");
+    assert.deepEqual(candidate.warnings, []);
   });
 
   assert.equal(preview.candidates[0].payload.holding_time_text, "15min 30sec");
   assert.equal(preview.candidates[0].payload.holding_time_minutes, 15.5);
 });
 
-test("uses PnL validation to infer a short Tradovate trade", () => {
+test("keeps timestamp direction and warns when PnL validation mismatches", () => {
   const csv = [
     header,
     "MNQM6,0.25,2,30200,30190,$40.00,06/04/2026 20:20:00,06/04/2026 20:00:00,20min"
@@ -67,7 +76,25 @@ test("uses PnL validation to infer a short Tradovate trade", () => {
   assert.equal(candidate.payload.entry_price, 30190);
   assert.equal(candidate.payload.exit_price, 30200);
   assert.equal(candidate.payload.result, "TP1");
-  assert.match(candidate.directionInference, /PnL matched Short/);
+  assert.equal(candidate.transactionOrder, "Sell first");
+  assert.match(candidate.directionInference, /Short inferred from timestamp order/);
+  assert.equal(candidate.pnlValidation, "Mismatch");
+  assert.match(candidate.warnings[0], /Timestamp order implies Short/);
+});
+
+test("warns and blocks import when a transaction timestamp is missing", () => {
+  const csv = [
+    header,
+    "MNQM6,0.25,2,30189,30228,$156.00,06/04/2026 20:08:41,,15min 30sec"
+  ].join("\n");
+  const candidate = parseBrokerCsv(csv, []).candidates[0];
+
+  assert.equal(candidate.transactionOrder, "Unknown");
+  assert.equal(candidate.inferredDirection, null);
+  assert.equal(candidate.pnlValidation, "Unavailable");
+  assert.match(candidate.warnings[0], /Missing boughtTimestamp or soldTimestamp/);
+  assert.ok(candidate.errors.includes("missing direction"));
+  assert.ok(candidate.errors.includes("invalid exit_time"));
 });
 
 test("normalizes supported futures roots and keeps the original broker symbol", () => {
