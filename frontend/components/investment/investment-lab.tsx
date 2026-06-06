@@ -295,8 +295,16 @@ type CoverageEndpointNeed = {
 };
 type CoverageScanEndpointPlan = {
   id: FmpCapabilityId;
-  status: "fresh cache" | "request needed" | "capability test + request" | "blocked by plan" | "unavailable";
+  status:
+    | "valid cache hit"
+    | "empty cache"
+    | "failed cache"
+    | "needs refetch"
+    | "capability test + request"
+    | "blocked by plan"
+    | "unavailable";
   estimatedCalls: number;
+  cacheCategory?: FmpCacheCategory | "missing";
 };
 type CoverageScanLikelihood = "High" | "Medium" | "Low";
 type CoverageScanPreviewRow = {
@@ -466,6 +474,38 @@ type FmpPremiumBlockMemory = {
   httpStatus: number;
   message: string;
 };
+type FmpCacheEntry = {
+  date: string;
+  data: unknown;
+  status?: "success" | "failed" | "premium blocked";
+  httpStatus?: number | null;
+  error?: string;
+  timestamp?: string;
+};
+type FmpCacheCategory =
+  | "valid data cache"
+  | "empty cache"
+  | "failed cache"
+  | "premium blocked cache"
+  | "stale cache";
+type FmpCacheAuditRow = {
+  cacheKey: string;
+  capabilityId: FmpCapabilityId | null;
+  symbols: string[];
+  category: FmpCacheCategory;
+  date: string;
+  reason: string;
+};
+type FmpCacheRepairSummary = {
+  repairedAt: string;
+  action: "empty" | "failed" | "empty and failed";
+  emptyCachesFound: number;
+  failedCachesFound: number;
+  cachesCleared: number;
+  symbolsAffected: string[];
+  endpointsAffected: string[];
+  nextRecommendedBatch: string[];
+};
 
 const FMP_CAPABILITY_DEFINITIONS: FmpCapabilityDefinition[] = [
   { id: "quote", label: "quote AAPL", endpoint: { path: "quote", params: { symbol: "AAPL" } } },
@@ -478,7 +518,7 @@ const FMP_CAPABILITY_DEFINITIONS: FmpCapabilityDefinition[] = [
 
 type InvestmentCache = {
   yahoo?: Record<string, { date: string; data: Partial<StockRecord> }>;
-  fmp?: Record<string, { date: string; data: unknown }>;
+  fmp?: Record<string, FmpCacheEntry>;
   fmpCapabilities?: Partial<Record<FmpCapabilityId, FmpCapabilityResult>>;
   fmpPremiumBlocked?: Partial<Record<FmpCapabilityId, FmpPremiumBlockMemory>>;
   fmpUsageDate?: string;
@@ -1028,6 +1068,18 @@ function premiumBlockMemoryFromCache(cache: InvestmentCache) {
       message: capability.preview || "Premium blocked by current FMP plan."
     };
   }
+  for (const [cacheKey, entry] of Object.entries(cache.fmp ?? {})) {
+    const endpointId = capabilityIdForCacheKey(cacheKey);
+    if (!endpointId || memory[endpointId] || !isPremiumBlockedCacheEntry(entry)) continue;
+    const timestamp = entry.timestamp ?? `${entry.date}T00:00:00.000Z`;
+    memory[endpointId] = {
+      endpointId,
+      firstBlockedAt: timestamp,
+      lastBlockedAt: timestamp,
+      httpStatus: entry.httpStatus ?? 402,
+      message: entry.error || "Premium or restricted endpoint response found in FMP cache."
+    };
+  }
   return memory;
 }
 
@@ -1135,7 +1187,7 @@ function capabilitiesFromCache(cache: InvestmentCache) {
 }
 
 function isPremiumBlockedText(value: string) {
-  return /HTTP 402|premium|subscription|special endpoint|not available under current subscription/i.test(value);
+  return /HTTP 402|premium|subscription|special endpoint|restricted endpoint|not available under current subscription|not available under current plan/i.test(value);
 }
 
 function classifyFmpFailure(status: number | null, preview: string): FmpCapabilityStatus {
@@ -1201,21 +1253,54 @@ class FmpRequestError extends Error {
   }
 }
 
+function storeFmpFailure(
+  cache: InvestmentCache,
+  cacheKey: string,
+  result: "failed" | "premium blocked",
+  message: string,
+  httpStatus: number | null
+) {
+  const next = {
+    ...cache,
+    fmp: {
+      ...(cache.fmp ?? {}),
+      [cacheKey]: {
+        date: todayKey(),
+        data: { error: message, httpStatus },
+        status: result,
+        httpStatus,
+        error: message,
+        timestamp: nowIso()
+      }
+    }
+  } satisfies InvestmentCache;
+  setCache(next);
+  return next;
+}
+
 async function fmpFetch(endpoint: FmpEndpoint, apiKey: string, cache: InvestmentCache, options: { forceRefresh?: boolean; allowErrorCacheFallback?: boolean } = {}) {
   const key = fmpEndpointKey(endpoint);
   const today = todayKey();
   const normalizedCache = normalizeFmpDailyUsage(cache);
   const capabilityId = capabilityIdForEndpoint(endpoint);
   const cached = normalizedCache.fmp?.[key];
-  if (!options.forceRefresh && cached?.date === today) {
+  const cachedAudit = cached ? classifyFmpCacheEntry(key, cached) : null;
+  const usableCachedData =
+    cachedAudit?.category === "valid data cache"
+    || cachedAudit?.category === "stale cache";
+  if (!options.forceRefresh && cached && cachedAudit?.category === "valid data cache") {
     return { data: cached.data, cache: normalizedCache, fromCache: true, attempted: false, attemptResult: "cache" as const, timestamp: `${cached.date}T00:00:00.000Z` };
   }
   if (capabilityId && normalizedCache.fmpPremiumBlocked?.[capabilityId]) {
-    if (cached) return { data: cached.data, cache: normalizedCache, fromCache: true, attempted: false, attemptResult: "cache" as const, timestamp: `${cached.date}T00:00:00.000Z` };
+    if (cached && usableCachedData) {
+      return { data: cached.data, cache: normalizedCache, fromCache: true, attempted: false, attemptResult: "cache" as const, timestamp: `${cached.date}T00:00:00.000Z` };
+    }
     throw new FmpRequestError(`${capabilityId} is permanently marked premium blocked for the current FMP plan.`, 402);
   }
   if (safeFmpRemaining(normalizedCache) <= 0) {
-    if (cached) return { data: cached.data, cache: normalizedCache, fromCache: true, attempted: false, attemptResult: "cache" as const, timestamp: `${cached.date}T00:00:00.000Z` };
+    if (cached && usableCachedData) {
+      return { data: cached.data, cache: normalizedCache, fromCache: true, attempted: false, attemptResult: "cache" as const, timestamp: `${cached.date}T00:00:00.000Z` };
+    }
     throw new Error("FMP safe remaining calls reached zero. Reconcile the official dashboard usage before continuing.");
   }
   let attemptedCache: InvestmentCache = recordFmpAttempt(normalizedCache);
@@ -1224,9 +1309,16 @@ async function fmpFetch(endpoint: FmpEndpoint, apiKey: string, cache: Investment
     response = await fetch(fmpUrl(endpoint, apiKey));
   } catch (error) {
     attemptedCache = recordFmpAttemptResult(attemptedCache, "networkErrors");
-    if (options.allowErrorCacheFallback !== false && cached) {
+    if (options.allowErrorCacheFallback !== false && cached && usableCachedData) {
       return { data: cached.data, cache: attemptedCache, fromCache: true, attempted: true, attemptResult: "networkErrors" as const, timestamp: `${cached.date}T00:00:00.000Z` };
     }
+    attemptedCache = storeFmpFailure(
+      attemptedCache,
+      key,
+      "failed",
+      error instanceof Error ? error.message : "Network error while requesting FMP.",
+      null
+    );
     throw error;
   }
   if (!response.ok) {
@@ -1238,9 +1330,14 @@ async function fmpFetch(endpoint: FmpEndpoint, apiKey: string, cache: Investment
             "otherErrors";
     attemptedCache = recordFmpAttemptResult(attemptedCache, resultKey);
     if (response.status === 402 && capabilityId) {
+      if (!(cached && usableCachedData)) {
+        attemptedCache = storeFmpFailure(attemptedCache, key, "premium blocked", details, response.status);
+      }
       attemptedCache = rememberPremiumBlocked(attemptedCache, capabilityId, details, response.status);
+    } else if (!(cached && usableCachedData)) {
+      attemptedCache = storeFmpFailure(attemptedCache, key, "failed", details, response.status);
     }
-    if (options.allowErrorCacheFallback !== false && cached) {
+    if (options.allowErrorCacheFallback !== false && cached && usableCachedData) {
       return { data: cached.data, cache: attemptedCache, fromCache: true, attempted: true, attemptResult: resultKey, timestamp: `${cached.date}T00:00:00.000Z` };
     }
     throw new FmpRequestError(details, response.status);
@@ -1249,13 +1346,25 @@ async function fmpFetch(endpoint: FmpEndpoint, apiKey: string, cache: Investment
   try {
     data = await response.json();
   } catch (error) {
-    recordFmpAttemptResult(attemptedCache, "otherErrors");
+    attemptedCache = recordFmpAttemptResult(attemptedCache, "otherErrors");
+    if (!(cached && usableCachedData)) {
+      attemptedCache = storeFmpFailure(
+        attemptedCache,
+        key,
+        "failed",
+        error instanceof Error ? `Malformed JSON: ${error.message}` : "Malformed JSON response.",
+        response.status
+      );
+    }
     throw error;
   }
   const successfulCache = recordFmpAttemptResult(attemptedCache, "success");
   const next = {
     ...successfulCache,
-    fmp: { ...(successfulCache.fmp ?? {}), [key]: { date: today, data } }
+    fmp: {
+      ...(successfulCache.fmp ?? {}),
+      [key]: { date: today, data, status: "success" as const, httpStatus: response.status, timestamp: nowIso() }
+    }
   };
   setCache(next);
   return { data, cache: next, fromCache: false, attempted: true, attemptResult: "success" as const, timestamp: nowIso() };
@@ -1569,6 +1678,167 @@ function cacheKeySymbols(cacheKey: string) {
   return symbols.split(",").map((symbol) => symbol.trim().toUpperCase()).filter(Boolean);
 }
 
+function capabilityIdForCacheKey(cacheKey: string): FmpCapabilityId | null {
+  const path = cacheKeyPath(cacheKey);
+  if (path === "quote") return "quote";
+  if (path === "profile") return "profile";
+  if (path === "ratios-ttm") return "ratios";
+  if (path === "income-statement") return "income";
+  if (path === "cash-flow-statement") return "cashFlow";
+  if (path === "historical-price-eod/full") return "historical";
+  return null;
+}
+
+function fmpCachePayloadMessage(entry: FmpCacheEntry) {
+  if (entry.error) return entry.error;
+  if (typeof entry.data === "string") return entry.data;
+  if (!entry.data || typeof entry.data !== "object") return "";
+  const payload = Array.isArray(entry.data)
+    ? recordArray(entry.data)[0]
+    : entry.data as Record<string, unknown>;
+  if (!payload) return "";
+  return String(
+    payload["Error Message"]
+    ?? payload.error
+    ?? payload.message
+    ?? payload.detail
+    ?? payload.statusText
+    ?? ""
+  );
+}
+
+function fmpCachePayloadStatus(entry: FmpCacheEntry) {
+  if (entry.httpStatus !== null && entry.httpStatus !== undefined) return entry.httpStatus;
+  if (!entry.data || typeof entry.data !== "object") return null;
+  const payload = Array.isArray(entry.data)
+    ? recordArray(entry.data)[0]
+    : entry.data as Record<string, unknown>;
+  if (!payload) return null;
+  return finiteValue(payload.httpStatus ?? payload.statusCode ?? payload.status);
+}
+
+function isPremiumBlockedCacheEntry(entry: FmpCacheEntry) {
+  const status = fmpCachePayloadStatus(entry);
+  return (
+    entry.status === "premium blocked"
+    || status === 402
+    || isPremiumBlockedText(fmpCachePayloadMessage(entry))
+  );
+}
+
+function isFailedFmpCacheEntry(entry: FmpCacheEntry) {
+  if (entry.status === "failed") return true;
+  const status = fmpCachePayloadStatus(entry);
+  if (status === 403 || status === 429 || (status !== null && status >= 500)) return true;
+  const message = fmpCachePayloadMessage(entry);
+  return /network error|failed to fetch|fetch failed|malformed json|invalid json|json parse|unauthorized|forbidden|rate limit|internal server error|request failed/i.test(message);
+}
+
+function cacheRowsForCapability(capabilityId: FmpCapabilityId | null, data: unknown) {
+  if (capabilityId === "historical") return historicalArray(data);
+  return recordArray(data);
+}
+
+function hasExpectedFmpFields(capabilityId: FmpCapabilityId | null, row: Record<string, unknown>) {
+  if (capabilityId === "historical") {
+    return row.close !== null && row.close !== undefined && row.close !== ""
+      || row.adjClose !== null && row.adjClose !== undefined && row.adjClose !== "";
+  }
+  const expectedFields: Record<Exclude<FmpCapabilityId, "historical">, string[]> = {
+    quote: ["price", "marketCap", "volume", "avgVolume", "yearHigh", "yearLow"],
+    profile: ["companyName", "name", "price", "marketCap", "mktCap", "sharesOutstanding", "sector", "industry"],
+    ratios: [
+      "peRatioTTM",
+      "priceToEarningsRatioTTM",
+      "returnOnEquityTTM",
+      "dividendYieldTTM",
+      "debtEquityRatioTTM",
+      "debtToEquityRatioTTM",
+      "revenueGrowthTTM",
+      "netProfitMarginTTM"
+    ],
+    income: ["revenue", "netIncome", "eps", "operatingIncome", "grossProfit"],
+    cashFlow: ["freeCashFlow", "operatingCashFlow", "netCashProvidedByOperatingActivities", "capitalExpenditure"]
+  };
+  const fields = capabilityId ? expectedFields[capabilityId] : Object.keys(row);
+  return fields.some((field) => {
+    const value = row[field];
+    return value !== null && value !== undefined && value !== "";
+  });
+}
+
+function fmpCacheHasUsableData(cacheKey: string, entry: FmpCacheEntry) {
+  const capabilityId = capabilityIdForCacheKey(cacheKey);
+  const rows = cacheRowsForCapability(capabilityId, entry.data);
+  return rows.some((row) => hasExpectedFmpFields(capabilityId, row));
+}
+
+function classifyFmpCacheEntry(cacheKey: string, entry: FmpCacheEntry): FmpCacheAuditRow {
+  const capabilityId = capabilityIdForCacheKey(cacheKey);
+  const base = {
+    cacheKey,
+    capabilityId,
+    symbols: cacheKeySymbols(cacheKey),
+    date: entry.date
+  };
+  if (isPremiumBlockedCacheEntry(entry)) {
+    return { ...base, category: "premium blocked cache", reason: "HTTP 402 or premium/restricted endpoint response." };
+  }
+  if (isFailedFmpCacheEntry(entry)) {
+    return { ...base, category: "failed cache", reason: fmpCachePayloadMessage(entry) || "Stored request failure marker." };
+  }
+  if (!fmpCacheHasUsableData(cacheKey, entry)) {
+    const rows = cacheRowsForCapability(capabilityId, entry.data);
+    return {
+      ...base,
+      category: "empty cache",
+      reason: rows.length
+        ? "Response rows exist but expected endpoint fields are missing."
+        : "Response is null, empty, malformed, or contains no usable rows."
+    };
+  }
+  if (entry.date !== todayKey()) {
+    return { ...base, category: "stale cache", reason: `Usable data is dated ${entry.date || "unknown"}.` };
+  }
+  return { ...base, category: "valid data cache", reason: "Usable endpoint data is fresh." };
+}
+
+function auditFmpCaches(cache: InvestmentCache) {
+  return Object.entries(cache.fmp ?? {}).map(([cacheKey, entry]) => classifyFmpCacheEntry(cacheKey, entry));
+}
+
+function fmpCacheAuditForEndpoint(cache: InvestmentCache, capabilityId: FmpCapabilityId, ticker: string) {
+  const cacheKey = fmpEndpointKey(fmpEndpointForTicker(capabilityId, ticker));
+  const entry = cache.fmp?.[cacheKey];
+  return entry ? classifyFmpCacheEntry(cacheKey, entry) : null;
+}
+
+function repairFmpCacheEntries(cache: InvestmentCache, action: FmpCacheRepairSummary["action"]) {
+  const audit = auditFmpCaches(cache);
+  const categories = new Set<FmpCacheCategory>(
+    action === "empty"
+      ? ["empty cache"]
+      : action === "failed"
+        ? ["failed cache"]
+        : ["empty cache", "failed cache"]
+  );
+  const selected = audit.filter((row) => categories.has(row.category));
+  const nextFmp = { ...(cache.fmp ?? {}) };
+  selected.forEach((row) => delete nextFmp[row.cacheKey]);
+  const next = {
+    ...cache,
+    fmp: nextFmp,
+    fmpPremiumBlocked: premiumBlockMemoryFromCache(cache)
+  } satisfies InvestmentCache;
+  return {
+    cache: next,
+    audit,
+    selected,
+    emptyCachesFound: audit.filter((row) => row.category === "empty cache").length,
+    failedCachesFound: audit.filter((row) => row.category === "failed cache").length
+  };
+}
+
 function cashFlowHistoryForTicker(cache: InvestmentCache, ticker: string) {
   const normalizedTicker = ticker.toUpperCase();
   const candidates = Object.entries(cache.fmp ?? {})
@@ -1718,9 +1988,8 @@ function cachedFmpEntry(cache: InvestmentCache, capabilityId: FmpCapabilityId, t
 }
 
 function hasFmpRecords(cache: InvestmentCache, capabilityId: FmpCapabilityId, ticker: string) {
-  const entry = cachedFmpEntry(cache, capabilityId, ticker);
-  if (!entry) return false;
-  return capabilityId === "historical" ? historicalArray(entry.data).length > 0 : recordArray(entry.data).length > 0;
+  const audit = fmpCacheAuditForEndpoint(cache, capabilityId, ticker);
+  return audit?.category === "valid data cache" || audit?.category === "stale cache";
 }
 
 function coverageReasons(stock: StockRecord, analysis: StockAnalysis, cache: InvestmentCache) {
@@ -1942,7 +2211,8 @@ function coverageRowsFor(
       const requiresSecFallback = missingFcf && row.secFcfStatus === "unknown";
       const estimatedAvailableCalls = row.endpointNeeds.reduce((sum, endpoint) => {
         if (endpoint.status === "blocked by plan") return sum;
-        return sum + (cachedFmpEntry(cache, endpoint.id, ticker)?.date === todayKey() ? 0 : 1);
+        const cacheAudit = fmpCacheAuditForEndpoint(cache, endpoint.id, ticker);
+        return sum + (cacheAudit?.category === "valid data cache" ? 0 : 1);
       }, 0);
       const fcfUnavailableAfterSec =
         missingFcf
@@ -2111,27 +2381,38 @@ function buildCoverageScanPreview(
   const rows = selectedRows.map((row) => {
     const ticker = row.analysis.stock.ticker;
     const missingEndpoints = row.endpointIds.map((id) => {
-      const cached = cachedFmpEntry(cache, id, ticker);
-      const freshCache = cached?.date === todayKey();
       const capability = capabilities[id];
       if (capability.status === "premium blocked") {
-        return { id, status: "blocked by plan", estimatedCalls: 0 } satisfies CoverageScanEndpointPlan;
+        return { id, status: "blocked by plan", estimatedCalls: 0, cacheCategory: "premium blocked cache" } satisfies CoverageScanEndpointPlan;
       }
-      if (freshCache) {
-        return { id, status: "fresh cache", estimatedCalls: 0 } satisfies CoverageScanEndpointPlan;
+      const cacheAudit = fmpCacheAuditForEndpoint(cache, id, ticker);
+      if (cacheAudit?.category === "valid data cache") {
+        return { id, status: "valid cache hit", estimatedCalls: 0, cacheCategory: cacheAudit.category } satisfies CoverageScanEndpointPlan;
       }
-      if (capability.status === "available") {
-        return { id, status: "request needed", estimatedCalls: 1 } satisfies CoverageScanEndpointPlan;
+      if (cacheAudit?.category === "empty cache") {
+        return { id, status: "empty cache", estimatedCalls: 1, cacheCategory: cacheAudit.category } satisfies CoverageScanEndpointPlan;
+      }
+      if (cacheAudit?.category === "failed cache") {
+        return { id, status: "failed cache", estimatedCalls: 1, cacheCategory: cacheAudit.category } satisfies CoverageScanEndpointPlan;
+      }
+      if (cacheAudit?.category === "stale cache") {
+        return { id, status: "needs refetch", estimatedCalls: 1, cacheCategory: cacheAudit.category } satisfies CoverageScanEndpointPlan;
+      }
+      if (cacheAudit?.category === "premium blocked cache") {
+        return { id, status: "blocked by plan", estimatedCalls: 0, cacheCategory: cacheAudit.category } satisfies CoverageScanEndpointPlan;
+      }
+      if (capability.status === "available" || capability.status === "error") {
+        return { id, status: "needs refetch", estimatedCalls: 1, cacheCategory: "missing" } satisfies CoverageScanEndpointPlan;
       }
       if (capability.status === "untested") {
-        return { id, status: "capability test + request", estimatedCalls: 1 } satisfies CoverageScanEndpointPlan;
+        return { id, status: "capability test + request", estimatedCalls: 1, cacheCategory: "missing" } satisfies CoverageScanEndpointPlan;
       }
-      return { id, status: "unavailable", estimatedCalls: 0 } satisfies CoverageScanEndpointPlan;
+      return { id, status: "unavailable", estimatedCalls: 0, cacheCategory: "missing" } satisfies CoverageScanEndpointPlan;
     });
     const unavailable = missingEndpoints.filter((endpoint) => endpoint.status === "unavailable");
     const blocked = missingEndpoints.filter((endpoint) => endpoint.status === "blocked by plan");
-    const emptyFreshCache = missingEndpoints.filter(
-      (endpoint) => endpoint.status === "fresh cache" && !hasFmpRecords(cache, endpoint.id, ticker)
+    const repairableCache = missingEndpoints.filter(
+      (endpoint) => endpoint.status === "empty cache" || endpoint.status === "failed cache"
     );
     const estimatedCalls = missingEndpoints.reduce((sum, endpoint) => sum + endpoint.estimatedCalls, 0);
     const hardReasonCount = row.reasons.filter((reason) => reason !== "insufficient real data").length;
@@ -2149,9 +2430,8 @@ function buildCoverageScanPreview(
     } else if (unavailable.length) {
       likelihood = "Low";
       likelihoodReason = `Blocked or unavailable endpoints: ${unavailable.map((endpoint) => endpoint.id).join(", ")}.`;
-    } else if (emptyFreshCache.length) {
-      likelihood = "Low";
-      likelihoodReason = `Fresh cached endpoints returned no usable records: ${emptyFreshCache.map((endpoint) => endpoint.id).join(", ")}.`;
+    } else if (repairableCache.length) {
+      likelihoodReason = `Bad cache entries will be refetched: ${repairableCache.map((endpoint) => `${endpoint.id} (${endpoint.status})`).join(", ")}.`;
     } else if (hardReasonCount <= 3) {
       likelihood = "High";
       likelihoodReason = "Only a small number of addressable fields are missing and all required endpoints can be used.";
@@ -2732,6 +3012,7 @@ export function InvestmentLab() {
   const [scanPrioritySettings, setScanPrioritySettings] = useState<ScanPrioritySettings>(defaultScanPrioritySettings());
   const [scanRoiHistory, setScanRoiHistory] = useState<ScanRoiBatch[]>([]);
   const [coverageScanPreview, setCoverageScanPreview] = useState<CoverageScanPreview | null>(null);
+  const [cacheRepairSummary, setCacheRepairSummary] = useState<FmpCacheRepairSummary | null>(null);
   const [secInspectorTicker, setSecInspectorTicker] = useState("AAPL");
   const [busy, setBusy] = useState(false);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
@@ -2836,10 +3117,12 @@ export function InvestmentLab() {
   const remainingFmpQuota = safeFmpRemaining(reconciledQuota);
   const fmpAttemptStats = reconciledQuota.fmpAttemptStats ?? defaultFmpAttemptStats();
   const permanentlyBlockedEndpointIds = Object.keys(reconciledQuota.fmpPremiumBlocked ?? {}) as FmpCapabilityId[];
+  const fmpCacheAudit = useMemo(() => auditFmpCaches(cacheInfo), [cacheInfo]);
   const scannedToday = scannedTickersToday(cacheInfo);
   const pendingCoverageCalls = coverageRows.filter((row) => row.scannable).reduce((sum, row) => sum + row.endpointIds.filter((endpointId) => {
-    if (fmpCapabilities[endpointId]?.status !== "available") return false;
-    return cachedFmpEntry(cacheInfo, endpointId, row.analysis.stock.ticker)?.date !== todayKey();
+    if (fmpCapabilities[endpointId]?.status === "premium blocked") return false;
+    const audit = fmpCacheAuditForEndpoint(cacheInfo, endpointId, row.analysis.stock.ticker);
+    return audit?.category !== "valid data cache";
   }).length, 0);
   const estimatedCoverageDays =
     pendingCoverageCalls <= 0
@@ -2933,6 +3216,35 @@ export function InvestmentLab() {
     setCacheInfo(next);
     setCoverageScanPreview(null);
     setStatus("FMP daily usage counters were manually reset for the local date.");
+  }
+
+  function repairFmpCaches(action: FmpCacheRepairSummary["action"]) {
+    const current = normalizeFmpDailyUsage(getCache());
+    const repaired = repairFmpCacheEntries(current, action);
+    const nextCoverageRows = coverageRowsFor(analyses, repaired.cache, watchlist, scanPrioritySettings);
+    const nextRecommendedBatch = nextCoverageRows
+      .filter((row) => row.scannable)
+      .slice(0, 5)
+      .map((row) => row.analysis.stock.ticker);
+    const summary: FmpCacheRepairSummary = {
+      repairedAt: nowIso(),
+      action,
+      emptyCachesFound: repaired.emptyCachesFound,
+      failedCachesFound: repaired.failedCachesFound,
+      cachesCleared: repaired.selected.length,
+      symbolsAffected: [...new Set(repaired.selected.flatMap((row) => row.symbols))].sort(),
+      endpointsAffected: [...new Set(repaired.selected.map((row) => row.capabilityId ?? cacheKeyPath(row.cacheKey)))].sort(),
+      nextRecommendedBatch
+    };
+    setCache(repaired.cache);
+    setCacheInfo(repaired.cache);
+    setFmpCapabilities(capabilitiesFromCache(repaired.cache));
+    setCoverageScanPreview(null);
+    setCacheRepairSummary(summary);
+    setStatus(
+      `FMP cache repair cleared ${summary.cachesCleared} ${action} cache entr${summary.cachesCleared === 1 ? "y" : "ies"}. `
+      + "Valid FMP caches, premium-blocked endpoint memory, SEC FCF cache, and quota counters were preserved."
+    );
   }
 
   function saveFmpCapabilities(next: Record<FmpCapabilityId, FmpCapabilityResult>) {
@@ -3202,19 +3514,32 @@ export function InvestmentLab() {
       }
       const pull = async (capabilityId: FmpCapabilityId, endpoint: FmpEndpoint) => {
         const capability = capabilities[capabilityId];
-        if (capability.status !== "available") {
+        if (capability.status === "premium blocked" || capability.status === "untested") {
           usedAvailableOnly = true;
           return null;
         }
         const liveCache = getCache();
         const cached = liveCache.fmp?.[fmpEndpointKey(endpoint)];
-        if (safeFmpRemaining(liveCache) <= 0 && !cached) {
+        const cachedAudit = cached ? classifyFmpCacheEntry(fmpEndpointKey(endpoint), cached) : null;
+        const canUseCached =
+          cachedAudit?.category === "valid data cache"
+          || cachedAudit?.category === "stale cache";
+        if (safeFmpRemaining(liveCache) <= 0 && !canUseCached) {
           quotaStopped = true;
           return null;
         }
         try {
           const response = await fmpFetch(endpoint, allocation.fmp_api_key, cacheState);
           cacheState = response.cache;
+          if (capability.status === "error" && response.attemptResult === "success") {
+            capabilities = updateFmpCapability({
+              ...capability,
+              status: "available",
+              httpStatus: 200,
+              preview: "Endpoint refetch succeeded after a previous failure.",
+              testedAt: nowIso()
+            });
+          }
           if (response.attempted) {
             calls += 1;
             endpointRoi[capabilityId].calls += 1;
@@ -3610,6 +3935,9 @@ export function InvestmentLab() {
         remainingQuota={remainingFmpQuota}
         estimatedDays={estimatedCoverageDays}
         pendingCalls={pendingCoverageCalls}
+        cacheAudit={fmpCacheAudit}
+        cacheRepairSummary={cacheRepairSummary}
+        onRepairCaches={repairFmpCaches}
         busy={busy}
         hasApiKey={Boolean(allocation.fmp_api_key.trim())}
         prioritySettings={scanPrioritySettings}
@@ -4313,6 +4641,9 @@ function DataCoverageManager({
   remainingQuota,
   estimatedDays,
   pendingCalls,
+  cacheAudit,
+  cacheRepairSummary,
+  onRepairCaches,
   busy,
   hasApiKey,
   prioritySettings,
@@ -4334,6 +4665,9 @@ function DataCoverageManager({
   remainingQuota: number;
   estimatedDays: number;
   pendingCalls: number;
+  cacheAudit: FmpCacheAuditRow[];
+  cacheRepairSummary: FmpCacheRepairSummary | null;
+  onRepairCaches: (action: FmpCacheRepairSummary["action"]) => void;
   busy: boolean;
   hasApiKey: boolean;
   prioritySettings: ScanPrioritySettings;
@@ -4359,6 +4693,11 @@ function DataCoverageManager({
   const blockedOnlyRows = coverageRows.filter((row) => row.blockedFromValidity);
   const nextSymbols = scannableRows.slice(0, 25).map((row) => row.analysis.stock.ticker);
   const visibleRows = coverageRows.slice(0, 50);
+  const cacheCategoryCount = (category: FmpCacheCategory) =>
+    cacheAudit.filter((row) => row.category === category).length;
+  const emptyCacheRows = cacheAudit.filter((row) => row.category === "empty cache");
+  const failedCacheRows = cacheAudit.filter((row) => row.category === "failed cache");
+  const repairableCacheRows = [...emptyCacheRows, ...failedCacheRows];
   const maxDistribution = Math.max(1, ...distribution.map((item) => item.count));
   const totalPriorityWeight = Object.values(prioritySettings.weights).reduce((sum, weight) => sum + weight, 0);
   const hybridFieldLabel = (field: HybridFieldStatus) =>
@@ -4415,6 +4754,99 @@ function DataCoverageManager({
           </div>
         </div>
       ) : null}
+
+      <div className="grid min-w-0 gap-4 rounded-lg border border-stroke bg-canvas p-3 sm:p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-ink">FMP Empty Cache Repair</div>
+            <div className="mt-1 max-w-3xl text-xs leading-5 text-muted">
+              Empty and failed entries no longer count as fresh data. Repair removes only bad FMP response entries.
+              Valid caches, stale usable data, premium-block memory, SEC FCF cache, and quota counters remain intact.
+            </div>
+          </div>
+          <Badge>{repairableCacheRows.length} repairable</Badge>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <ValueBox label="Valid Data Cache" value={`${cacheCategoryCount("valid data cache")}`} />
+          <ValueBox label="Empty Cache" value={`${emptyCacheRows.length}`} />
+          <ValueBox label="Failed Cache" value={`${failedCacheRows.length}`} />
+          <ValueBox label="Premium Blocked Cache" value={`${cacheCategoryCount("premium blocked cache")}`} />
+          <ValueBox label="Stale Cache" value={`${cacheCategoryCount("stale cache")}`} />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => onRepairCaches("empty")}
+            disabled={busy || !emptyCacheRows.length}
+          >
+            Clear Empty FMP Caches
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => onRepairCaches("failed")}
+            disabled={busy || !failedCacheRows.length}
+          >
+            Clear Failed FMP Caches
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onRepairCaches("empty and failed")}
+            disabled={busy || !repairableCacheRows.length}
+          >
+            Clear Empty + Failed
+          </Button>
+        </div>
+
+        {cacheRepairSummary ? (
+          <div className="grid gap-3 rounded-lg border border-stroke bg-panel p-3 sm:grid-cols-2 xl:grid-cols-4">
+            <ValueBox label="Empty Caches Found" value={`${cacheRepairSummary.emptyCachesFound}`} />
+            <ValueBox label="Failed Caches Found" value={`${cacheRepairSummary.failedCachesFound}`} />
+            <ValueBox label="Caches Cleared" value={`${cacheRepairSummary.cachesCleared}`} />
+            <ValueBox label="Repair Time" value={formatDateTime(cacheRepairSummary.repairedAt)} />
+            <div className="break-words text-xs leading-5 text-muted sm:col-span-2 xl:col-span-4">
+              Symbols affected: {cacheRepairSummary.symbolsAffected.join(", ") || "--"}.
+              Endpoints affected: {cacheRepairSummary.endpointsAffected.join(", ") || "--"}.
+              Next recommended batch: {cacheRepairSummary.nextRecommendedBatch.join(", ") || "No currently scannable symbols"}.
+            </div>
+          </div>
+        ) : null}
+
+        {repairableCacheRows.length ? (
+          <div className="overflow-x-auto rounded-lg border border-stroke">
+            <table className="min-w-[900px] w-full border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-stroke bg-panel text-muted">
+                  <th className="px-3 py-2 font-medium">Symbol</th>
+                  <th className="px-3 py-2 font-medium">Endpoint</th>
+                  <th className="px-3 py-2 font-medium">Category</th>
+                  <th className="px-3 py-2 font-medium">Cache Date</th>
+                  <th className="px-3 py-2 font-medium">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repairableCacheRows.slice(0, 50).map((row) => (
+                  <tr key={`cache-audit-${row.cacheKey}`} className="border-b border-stroke last:border-0">
+                    <td className="px-3 py-3 font-medium text-ink">{row.symbols.join(", ") || "--"}</td>
+                    <td className="px-3 py-3 text-muted">{row.capabilityId ?? cacheKeyPath(row.cacheKey)}</td>
+                    <td className="px-3 py-3"><Badge>{row.category}</Badge></td>
+                    <td className="px-3 py-3 text-muted">{row.date || "--"}</td>
+                    <td className="max-w-96 px-3 py-3 text-muted"><span className="break-words">{row.reason}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="rounded-md border border-stroke bg-panel px-3 py-2 text-sm text-muted">
+            No empty or failed FMP cache entries are currently stored.
+          </div>
+        )}
+      </div>
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-lg border border-stroke bg-canvas p-3">
@@ -4605,12 +5037,13 @@ function DataCoverageManager({
                     <td className="px-3 py-3 font-semibold text-ink">{row.ticker}</td>
                     <td className="px-3 py-3 font-semibold text-ink">{row.priorityScore}</td>
                     <td className="max-w-80 px-3 py-3 text-muted"><span className="break-words">{row.priorityReason}</span></td>
-                    <td className="px-3 py-3"><Badge>{row.secFcfAvailable ? "Available" : "No"}</Badge></td>
+                    <td className="px-3 py-3"><Badge>{row.secFcfAvailable ? "SEC fallback available" : "No"}</Badge></td>
                     <td className="max-w-96 px-3 py-3 text-muted">
                       <div className="flex flex-wrap gap-1.5">
                         {row.missingEndpoints.map((endpoint) => (
                           <Badge key={`${row.ticker}-${endpoint.id}`} className="min-h-6 px-2 py-0.5">
                             {endpoint.id}: {endpoint.status}
+                            {endpoint.cacheCategory === "stale cache" ? " (stale cache)" : ""}
                           </Badge>
                         ))}
                         {!row.missingEndpoints.length ? <span>Manual review only</span> : null}
