@@ -1,0 +1,60 @@
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+*api-key*.txt
+*apikey*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+backend/.venv/
+backend/uploads/
+
+# Runtime API data and local caches
+backend/data/
+*.sqlite
+*.sqlite3
+*.db
+.tmp*
+tmp/
+temp/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+coverage/
+frontend/node_modules/
+frontend/.next/
+
+# Logs and local process output
+*.log
+*.log.*
+.codex-logs/
+frontend/.codex-logs/
+backend/.codex-logs/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+

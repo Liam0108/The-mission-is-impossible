@@ -1,0 +1,11 @@
+[project]
+name = "fabio-edge-research-lab-backend"
+version = "0.1.0"
+description = "FastAPI backend for discretionary trading research and decision support."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+

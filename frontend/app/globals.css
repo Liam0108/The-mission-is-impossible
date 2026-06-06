@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --canvas: 247 248 250;
+  --panel: 255 255 255;
+  --stroke: 222 226 232;
+  --ink: 17 24 39;
+  --muted: 99 108 122;
+  --accent: 16 185 129;
+  --positive: 5 150 105;
+  --caution: 217 119 6;
+  --danger: 225 29 72;
+}
+
+.dark {
+  --canvas: 10 12 15;
+  --panel: 18 21 26;
+  --stroke: 42 47 56;
+  --ink: 242 244 247;
+  --muted: 151 161 176;
+  --accent: 45 212 191;
+  --positive: 52 211 153;
+  --caution: 245 158 11;
+  --danger: 251 113 133;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: rgb(var(--canvas));
+}
+
+body {
+  min-height: 100vh;
+  background: rgb(var(--canvas));
+  color: rgb(var(--ink));
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.24);
+}
+
+.focus-ring {
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas;
+}
+

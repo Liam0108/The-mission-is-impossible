@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fabio_edge}
+      POSTGRES_USER: ${POSTGRES_USER:-fabio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fabio_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/app/db/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fabio} -d ${POSTGRES_DB:-fabio_edge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fabio:fabio_dev_password@postgres:5432/fabio_edge}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-your_name_or_email_for_sec_requests}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - uploaded_screenshots:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend-tests:
+    build:
+      context: ./backend
+    command: python -m pytest
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://fabio:fabio_dev_password@postgres:5432/fabio_edge}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  uploaded_screenshots:
