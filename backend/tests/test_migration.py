@@ -56,3 +56,13 @@ def test_broker_trade_import_migration_is_additive():
     assert "DELETE FROM trades" not in sql
     assert "'unreviewed'" in sql
     assert "'reviewed'" in sql
+
+
+def test_tradovate_closed_trades_migration_is_additive():
+    sql = (MIGRATIONS / "010_tradovate_closed_trades_import.sql").read_text()
+
+    assert "ALTER COLUMN result_r DROP NOT NULL" in sql
+    assert "ADD COLUMN IF NOT EXISTS buy_price" in sql
+    assert "ADD COLUMN IF NOT EXISTS holding_time_text" in sql
+    assert "DROP TABLE" not in sql.upper()
+    assert "DELETE FROM trades" not in sql

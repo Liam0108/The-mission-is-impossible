@@ -340,6 +340,7 @@ psql "$DATABASE_URL" -f backend/app/db/migrations/006_trade_logger_field_clarity
 psql "$DATABASE_URL" -f backend/app/db/migrations/007_market_candle_debug_metadata.sql
 psql "$DATABASE_URL" -f backend/app/db/migrations/008_setup_type_edge_lab_v2.sql
 psql "$DATABASE_URL" -f backend/app/db/migrations/009_broker_trade_import_v1.sql
+psql "$DATABASE_URL" -f backend/app/db/migrations/010_tradovate_closed_trades_import.sql
 ```
 
 Docker example:
@@ -354,6 +355,7 @@ docker compose exec -T postgres psql -U fabio -d fabio_edge < backend/app/db/mig
 docker compose exec -T postgres psql -U fabio -d fabio_edge < backend/app/db/migrations/007_market_candle_debug_metadata.sql
 docker compose exec -T postgres psql -U fabio -d fabio_edge < backend/app/db/migrations/008_setup_type_edge_lab_v2.sql
 docker compose exec -T postgres psql -U fabio -d fabio_edge < backend/app/db/migrations/009_broker_trade_import_v1.sql
+docker compose exec -T postgres psql -U fabio -d fabio_edge < backend/app/db/migrations/010_tradovate_closed_trades_import.sql
 ```
 
 The migration only adds columns, constraints, and indexes. It does not delete existing trade data.

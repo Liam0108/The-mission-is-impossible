@@ -28,7 +28,7 @@ export type Trade = {
   tp2_price: number | null;
   risk_amount: number | null;
   result: string;
-  result_r: number;
+  result_r: number | null;
   mfe: number;
   mae: number;
   distance_to_poc: number | null;
@@ -59,6 +59,10 @@ export type Trade = {
   data_quality: "good" | "incomplete" | "bad";
   account: string | null;
   broker_symbol: string | null;
+  buy_price: number | null;
+  sell_price: number | null;
+  bought_time: string | null;
+  sold_time: string | null;
   quantity: number | null;
   entry_time: string | null;
   exit_time: string | null;
@@ -69,6 +73,7 @@ export type Trade = {
   broker_trade_id: string | null;
   import_source: string | null;
   holding_time_minutes: number | null;
+  holding_time_text: string | null;
   imported: boolean;
   review_status: "unreviewed" | "reviewed";
   created_at: string;

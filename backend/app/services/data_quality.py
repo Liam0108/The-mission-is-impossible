@@ -16,12 +16,21 @@ REQUIRED_TAKEN_FIELDS: tuple[tuple[str, str], ...] = (
     ("choch", "choch"),
     ("fvg_reaction", "fvg"),
 )
+REQUIRED_IMPORTED_REVIEW_FIELDS: tuple[tuple[str, str], ...] = (
+    ("setup_type", "setup_type"),
+    ("regime_label", "regime_label"),
+    ("manual_quality", "manual_quality"),
+    ("notes", "notes"),
+)
 DECISIVE_RESULTS = {"TP1", "BE", "SL"}
 
 
 def missing_required_fields(trade: Any) -> list[str]:
     missing = []
-    for field, label in REQUIRED_TAKEN_FIELDS:
+    required_fields = REQUIRED_TAKEN_FIELDS
+    if bool(value_of(trade, "imported", False)):
+        required_fields += REQUIRED_IMPORTED_REVIEW_FIELDS
+    for field, label in required_fields:
         value = value_of(trade, field)
         if value is None or as_str(value).strip() == "":
             missing.append(label)

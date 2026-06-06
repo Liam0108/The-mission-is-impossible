@@ -66,6 +66,10 @@ TRADE_CSV_FIELDS = [
     "data_quality",
     "account",
     "broker_symbol",
+    "buy_price",
+    "sell_price",
+    "bought_time",
+    "sold_time",
     "quantity",
     "entry_time",
     "exit_time",
@@ -76,6 +80,7 @@ TRADE_CSV_FIELDS = [
     "broker_trade_id",
     "import_source",
     "holding_time_minutes",
+    "holding_time_text",
     "imported",
     "review_status",
 ]
@@ -117,6 +122,10 @@ def parse_trades_csv(raw_csv: str) -> list[TradeCreate]:
             "screenshot_path",
             "account",
             "broker_symbol",
+            "buy_price",
+            "sell_price",
+            "bought_time",
+            "sold_time",
             "quantity",
             "entry_time",
             "exit_time",
@@ -127,6 +136,7 @@ def parse_trades_csv(raw_csv: str) -> list[TradeCreate]:
             "broker_trade_id",
             "import_source",
             "holding_time_minutes",
+            "holding_time_text",
         ]:
             if cleaned.get(optional_field) == "":
                 cleaned[optional_field] = None
@@ -148,7 +158,9 @@ def parse_trades_csv(raw_csv: str) -> list[TradeCreate]:
         for bool_field in ["screenshot_favorite", "screenshot_bookmarked", "imported"]:
             if cleaned.get(bool_field) in {"", None}:
                 cleaned[bool_field] = False
-        for numeric_field in ["result_r", "mfe", "mae"]:
+        if cleaned.get("result_r") == "":
+            cleaned["result_r"] = None
+        for numeric_field in ["mfe", "mae"]:
             if cleaned.get(numeric_field) == "":
                 cleaned[numeric_field] = 0
         trades.append(TradeCreate.model_validate(cleaned))

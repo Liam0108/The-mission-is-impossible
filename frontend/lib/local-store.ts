@@ -144,6 +144,10 @@ const TRADE_FIELDS: Array<keyof Trade> = [
   "data_quality",
   "account",
   "broker_symbol",
+  "buy_price",
+  "sell_price",
+  "bought_time",
+  "sold_time",
   "quantity",
   "entry_time",
   "exit_time",
@@ -154,6 +158,7 @@ const TRADE_FIELDS: Array<keyof Trade> = [
   "broker_trade_id",
   "import_source",
   "holding_time_minutes",
+  "holding_time_text",
   "imported",
   "review_status",
   "created_at",
@@ -176,6 +181,8 @@ const NUMBER_FIELDS = new Set<keyof Trade>([
   "discipline_score",
   "execution_score",
   "emotion_score",
+  "buy_price",
+  "sell_price",
   "quantity",
   "exit_price",
   "gross_pnl",
@@ -313,6 +320,10 @@ function defaultPayload(): TradePayload {
     data_quality: "incomplete",
     account: null,
     broker_symbol: null,
+    buy_price: null,
+    sell_price: null,
+    bought_time: null,
+    sold_time: null,
     quantity: null,
     entry_time: null,
     exit_time: null,
@@ -323,6 +334,7 @@ function defaultPayload(): TradePayload {
     broker_trade_id: null,
     import_source: null,
     holding_time_minutes: null,
+    holding_time_text: null,
     imported: false,
     review_status: "reviewed"
   };
@@ -341,6 +353,10 @@ function readTrades(): Trade[] {
         data_quality: trade.data_quality ?? classifyDataQuality(trade),
         account: trade.account ?? null,
         broker_symbol: trade.broker_symbol ?? null,
+        buy_price: trade.buy_price ?? null,
+        sell_price: trade.sell_price ?? null,
+        bought_time: trade.bought_time ?? null,
+        sold_time: trade.sold_time ?? null,
         quantity: trade.quantity ?? null,
         entry_time: trade.entry_time ?? null,
         exit_time: trade.exit_time ?? null,
@@ -351,6 +367,7 @@ function readTrades(): Trade[] {
         broker_trade_id: trade.broker_trade_id ?? null,
         import_source: trade.import_source ?? null,
         holding_time_minutes: trade.holding_time_minutes ?? null,
+        holding_time_text: trade.holding_time_text ?? null,
         imported: trade.imported ?? false,
         review_status: trade.review_status ?? "reviewed"
       }))
@@ -392,7 +409,9 @@ function normalizePayload(payload: Partial<TradePayload>): TradePayload {
   }
   return {
     ...merged,
-    result_r: asNumber(merged.result_r),
+    result_r: merged.result_r === null || merged.result_r === undefined
+      ? null
+      : asNumber(merged.result_r),
     mfe: asNumber(merged.mfe),
     mae: asNumber(merged.mae),
     imported: Boolean(merged.imported),
@@ -447,7 +466,16 @@ const REQUIRED_TAKEN_FIELDS: Array<[keyof TradePayload, string]> = [
 
 function missingRequiredFields(trade: Partial<TradePayload>) {
   if (trade.trade_decision !== "Taken") return [];
-  return REQUIRED_TAKEN_FIELDS.filter(([field]) => {
+  const required = trade.imported
+    ? [
+      ...REQUIRED_TAKEN_FIELDS,
+      ["setup_type", "setup_type"],
+      ["regime_label", "regime_label"],
+      ["manual_quality", "manual_quality"],
+      ["notes", "notes"]
+    ] as Array<[keyof TradePayload, string]>
+    : REQUIRED_TAKEN_FIELDS;
+  return required.filter(([field]) => {
     const value = trade[field];
     return value === null || value === undefined || String(value).trim() === "";
   }).map(([, label]) => label);

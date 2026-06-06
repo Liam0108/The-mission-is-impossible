@@ -145,6 +145,10 @@ function baseTrade(): TradePayload {
     data_quality: "incomplete",
     account: null,
     broker_symbol: null,
+    buy_price: null,
+    sell_price: null,
+    bought_time: null,
+    sold_time: null,
     quantity: null,
     entry_time: null,
     exit_time: null,
@@ -155,6 +159,7 @@ function baseTrade(): TradePayload {
     broker_trade_id: null,
     import_source: null,
     holding_time_minutes: null,
+    holding_time_text: null,
     imported: false,
     review_status: "reviewed"
   };
@@ -210,11 +215,15 @@ function resultRFor(result: string, rr: number | null) {
 }
 
 function resultRFromImportedTrade(trade: Trade, stopLoss: number | null | undefined) {
-  if (trade.entry_price === null || trade.exit_price === null || stopLoss === null || stopLoss === undefined) return trade.result_r;
+  if (trade.entry_price === null || trade.exit_price === null || stopLoss === null || stopLoss === undefined) return null;
   const risk = Math.abs(trade.entry_price - stopLoss);
-  if (!risk) return trade.result_r;
+  if (!risk) return null;
   const reward = trade.direction === "Long" ? trade.exit_price - trade.entry_price : trade.entry_price - trade.exit_price;
   return Number((reward / risk).toFixed(2));
+}
+
+function formatNullableR(value: number | null | undefined, fallback: string) {
+  return value === null || value === undefined || !Number.isFinite(value) ? fallback : formatR(value);
 }
 
 function screenshotHref(path: string) {
@@ -308,11 +317,13 @@ export function TradeLogger() {
   }, [currentReviewTrade]);
 
   useEffect(() => {
-    const nextResultR = resultRFor(form.result, distances.rr);
+    const nextResultR = form.imported && form.stop_loss === null
+      ? null
+      : resultRFor(form.result, distances.rr);
     if (form.result_r !== nextResultR && ["TP1", "BE", "SL", "NoTrade", "Unknown"].includes(form.result)) {
       setForm((current) => ({ ...current, result_r: nextResultR }));
     }
-  }, [distances.rr, form.result, form.result_r]);
+  }, [distances.rr, form.imported, form.result, form.result_r, form.stop_loss]);
 
   function setField<K extends keyof TradePayload>(key: K, value: TradePayload[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -583,16 +594,21 @@ export function TradeLogger() {
                 </div>
               </div>
               <div className="overflow-x-auto rounded-lg border border-stroke">
-                <table className="w-full min-w-[900px] text-left text-sm">
+                <table className="w-full min-w-[1320px] text-left text-sm">
                   <thead className="bg-canvas text-xs uppercase text-muted">
                     <tr>
                       <th className="px-3 py-2 font-medium">Row</th>
                       <th className="px-3 py-2 font-medium">Account</th>
-                      <th className="px-3 py-2 font-medium">Symbol</th>
+                      <th className="px-3 py-2 font-medium">Broker Symbol</th>
+                      <th className="px-3 py-2 font-medium">Normalized</th>
                       <th className="px-3 py-2 font-medium">Direction</th>
                       <th className="px-3 py-2 font-medium">Entry</th>
                       <th className="px-3 py-2 font-medium">Exit</th>
+                      <th className="px-3 py-2 font-medium">Entry Time</th>
+                      <th className="px-3 py-2 font-medium">Exit Time</th>
                       <th className="px-3 py-2 text-right font-medium">Net PnL</th>
+                      <th className="px-3 py-2 font-medium">Result</th>
+                      <th className="px-3 py-2 font-medium">R</th>
                       <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
                   </thead>
@@ -602,10 +618,15 @@ export function TradeLogger() {
                         <td className="px-3 py-2 text-muted">{candidate.rowNumber}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.account ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.broker_symbol ?? candidate.payload.instrument}</td>
-                        <td className="px-3 py-2 text-muted">{candidate.payload.direction}</td>
+                        <td className="px-3 py-2 font-medium text-ink">{candidate.payload.instrument}</td>
+                        <td className="px-3 py-2 text-muted" title={candidate.directionInference}>{candidate.payload.direction}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.entry_price ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.exit_price ?? copy.notAvailable}</td>
+                        <td className="px-3 py-2 text-muted">{candidate.payload.entry_time ? new Date(candidate.payload.entry_time).toLocaleString() : copy.notAvailable}</td>
+                        <td className="px-3 py-2 text-muted">{candidate.payload.exit_time ? new Date(candidate.payload.exit_time).toLocaleString() : copy.notAvailable}</td>
                         <td className="px-3 py-2 text-right text-muted">{candidate.payload.net_pnl ?? copy.notAvailable}</td>
+                        <td className="px-3 py-2 font-medium text-ink">{candidate.payload.result}</td>
+                        <td className="px-3 py-2 text-muted">{formatNullableR(candidate.payload.result_r, copy.notAvailable)}</td>
                         <td className="px-3 py-2 text-muted">
                           {candidate.duplicate ? candidate.duplicateReason : candidate.errors.length ? candidate.errors.join(", ") : "Ready"}
                         </td>
@@ -639,7 +660,7 @@ export function TradeLogger() {
               <ImportMetric label="Direction" value={currentReviewTrade.direction} />
               <ImportMetric label="Net PnL" value={currentReviewTrade.net_pnl ?? copy.notAvailable} />
               <ImportMetric label="Holding Time" value={currentReviewTrade.holding_time_minutes === null ? copy.notAvailable : `${currentReviewTrade.holding_time_minutes} min`} />
-              <ImportMetric label="Result R" value={formatR(Number(currentReviewTrade.result_r))} />
+              <ImportMetric label="Result R" value={formatNullableR(currentReviewTrade.result_r, copy.notAvailable)} />
             </div>
 
             <div className="grid gap-4">
@@ -903,7 +924,7 @@ export function TradeLogger() {
                 <Select tabIndex={13} value={form.result} options={RESULTS} getOptionLabel={selectLabel} onChange={(event) => setField("result", event.target.value)} />
               </Field>
               <Field label={label("resultR")} helper={helper("resultR")}>
-                <Input type="number" step="0.01" value={form.result_r} onChange={(event) => setField("result_r", Number(event.target.value))} />
+                <Input type="number" step="0.01" value={form.result_r ?? ""} onChange={(event) => setField("result_r", numberOrNull(event.target.value))} />
               </Field>
               <Field label={label("mfe")} helper={helper("mfe")}>
                 <Input type="number" step="0.01" value={form.mfe} onChange={(event) => setField("mfe", Number(event.target.value))} />
@@ -1011,7 +1032,7 @@ export function TradeLogger() {
                         copy.notAvailable
                       )}
                     </td>
-                    <td className="py-3 text-right font-medium text-ink">{formatR(Number(trade.result_r))}</td>
+                    <td className="py-3 text-right font-medium text-ink">{formatNullableR(trade.result_r, copy.notAvailable)}</td>
                     <td className="py-3">
                       <div className="flex justify-end gap-2">
                         <Button type="button" variant="ghost" size="icon" aria-label={copy.editSetup} onClick={() => { setEditingId(trade.id); setQuickDuplicateMode(false); setPendingScreenshot(null); setForm(toPayload(trade)); }}>
