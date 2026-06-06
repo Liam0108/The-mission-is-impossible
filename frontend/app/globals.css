@@ -36,6 +36,7 @@ html {
 
 body {
   min-height: 100vh;
+  overflow-x: hidden;
   background: rgb(var(--canvas));
   color: rgb(var(--ink));
   letter-spacing: 0;
@@ -55,4 +56,3 @@ textarea {
 .focus-ring {
   @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas;
 }
-
