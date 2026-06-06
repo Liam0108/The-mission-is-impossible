@@ -38,6 +38,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { PortfolioBuilderV1 } from "@/components/investment/portfolio-builder";
 import { API_BASE } from "@/lib/api";
 import { getStoredLanguage, type Language } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -4270,19 +4271,28 @@ export function InvestmentLab() {
         <FmpRawResponseInspector stocks={stocks} cache={cacheInfo} />
       </> : null}
 
-      {activeTab === "portfolio" ? <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
-        <PortfolioCard
-          language={language}
-          title={t.portfolio}
-          portfolio={portfolio}
-          holdings={holdings}
-          holdingDraft={holdingDraft}
-          setHoldingDraft={setHoldingDraft}
-          saveHolding={saveHolding}
-          deleteHolding={(id) => saveHoldings(holdings.filter((holding) => holding.id !== id))}
-        />
-        <AllocationCard language={language} title={t.allocation} allocation={allocation} saveAllocation={saveAllocation} />
-      </div> : null}
+      {activeTab === "portfolio" ? <>
+        <PortfolioBuilderV1 analyses={analyses} />
+        <CollapsibleCard
+          title="Existing Holdings & Profit Allocation"
+          badge={<Badge>Manual tools</Badge>}
+          contentClassName="grid gap-4 sm:gap-6"
+        >
+          <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
+            <PortfolioCard
+              language={language}
+              title={t.portfolio}
+              portfolio={portfolio}
+              holdings={holdings}
+              holdingDraft={holdingDraft}
+              setHoldingDraft={setHoldingDraft}
+              saveHolding={saveHolding}
+              deleteHolding={(id) => saveHoldings(holdings.filter((holding) => holding.id !== id))}
+            />
+            <AllocationCard language={language} title={t.allocation} allocation={allocation} saveAllocation={saveAllocation} />
+          </div>
+        </CollapsibleCard>
+      </> : null}
 
       {activeTab === "valuation" ? <CollapsibleCard title={t.rankings} icon={<BarChart3 className="h-4 w-4 shrink-0 text-accent" />} defaultOpen contentClassName="overflow-x-auto">
         <div className="grid min-w-0 gap-4 sm:gap-6">
