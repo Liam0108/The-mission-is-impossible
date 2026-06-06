@@ -1,16 +1,46 @@
 "use client";
 
 import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BarChart3, BriefcaseBusiness, ChevronDown, Database, DownloadCloud, Plus, RefreshCcw, ShieldAlert, Trash2, TrendingUp } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  BriefcaseBusiness,
+  ChevronDown,
+  CircleDollarSign,
+  DatabaseZap,
+  DownloadCloud,
+  GitBranch,
+  LayoutDashboard,
+  Plus,
+  RefreshCcw,
+  ScanSearch,
+  ShieldAlert,
+  SlidersHorizontal,
+  Trash2,
+  TrendingUp,
+  WalletCards
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  CollapsiblePanel,
+  DashboardCard,
+  DataTableWrapper,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  MetricCard,
+  SectionHeader,
+  StatusBadge
+} from "@/components/ui/dashboard";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { API_BASE } from "@/lib/api";
 import { getStoredLanguage, type Language } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 import {
   ALLOCATION_KEY,
   ASSUMPTIONS_KEY,
@@ -74,6 +104,17 @@ const REVERSE_DCF_AUDIT_TICKERS = ["AMZN", "NVDA", "MSFT", "META", "GOOGL", "AAP
 const FMP_MAPPING_COMPARISON_KEY = "fabio-investment-fmp-mapping-comparison-v1";
 const SCAN_PRIORITY_SETTINGS_KEY = "fabio-investment-scan-priority-v1";
 const SCAN_ROI_HISTORY_KEY = "fabio-investment-scan-roi-v1";
+const INVESTMENT_TAB_KEY = "fabio-investment-active-tab-v1";
+const INVESTMENT_TABS = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "scanner", label: "Stock Scanner", icon: ScanSearch },
+  { id: "valuation", label: "Valuation Lab", icon: CircleDollarSign },
+  { id: "scenario", label: "Scenario Decision", icon: GitBranch },
+  { id: "portfolio", label: "Portfolio Builder", icon: WalletCards },
+  { id: "coverage", label: "Data Coverage", icon: DatabaseZap },
+  { id: "diagnostics", label: "Diagnostics", icon: SlidersHorizontal }
+] as const;
+type InvestmentTab = (typeof INVESTMENT_TABS)[number]["id"];
 const SCAN_PRIORITY_MODES = [
   "Make Valid Fastest",
   "Complete SEC-FCF Stocks First",
@@ -2994,6 +3035,7 @@ function buildRankingAuditRows(
 
 export function InvestmentLab() {
   const [language, setLanguage] = useState<Language>("en");
+  const [activeTab, setActiveTab] = useState<InvestmentTab>("overview");
   const [stocks, setStocks] = useState<StockRecord[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
@@ -3020,6 +3062,8 @@ export function InvestmentLab() {
   useEffect(() => {
     let cancelled = false;
     setLanguage(getStoredLanguage());
+    const storedTab = window.localStorage.getItem(INVESTMENT_TAB_KEY) as InvestmentTab | null;
+    if (storedTab && INVESTMENT_TABS.some((tab) => tab.id === storedTab)) setActiveTab(storedTab);
     const storedStocks = readJson<StockRecord[]>(STOCKS_KEY, []);
     setHoldings(readJson<Holding[]>(HOLDINGS_KEY, []));
     setWatchlist(readJson<WatchlistItem[]>(WATCHLIST_KEY, []));
@@ -3130,7 +3174,6 @@ export function InvestmentLab() {
       : pendingCoverageCalls <= remainingFmpQuota
         ? 1
         : 1 + Math.ceil((pendingCoverageCalls - remainingFmpQuota) / Math.max(1, officialFmpLimit - fmpSafetyBuffer));
-  const lastUpdated = analyses[0]?.stock.last_updated ?? "";
   const stale = analyses.some((analysis) => isStale(analysis.stock.last_updated));
   const scenarioProbabilitiesValid = scenarioProbabilitiesAreValid(scenarioProbabilities);
   const effectiveScenarioProbabilities = scenarioProbabilitiesValid ? scenarioProbabilities : defaultScenarioProbabilities();
@@ -3145,6 +3188,12 @@ export function InvestmentLab() {
   function saveStocks(next: StockRecord[]) {
     setStocks(next);
     writeJson(STOCKS_KEY, next);
+  }
+
+  function changeActiveTab(tab: InvestmentTab) {
+    setActiveTab(tab);
+    window.localStorage.setItem(INVESTMENT_TAB_KEY, tab);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function saveHoldings(next: Holding[]) {
@@ -3867,26 +3916,102 @@ export function InvestmentLab() {
       .sort((left, right) => (left.valuation.scenarioValuation.upsideToBullPct ?? Number.POSITIVE_INFINITY) - (right.valuation.scenarioValuation.upsideToBullPct ?? Number.POSITIVE_INFINITY))
       .slice(0, 10)
   };
+  const overviewWarnings = [
+    backendOnline === false ? BACKEND_OFFLINE_MESSAGE : "",
+    stale ? t.stale : "",
+    fmpCacheAudit.filter((row) => row.category === "empty cache" || row.category === "failed cache").length
+      ? `${fmpCacheAudit.filter((row) => row.category === "empty cache" || row.category === "failed cache").length} FMP cache entries need repair.`
+      : "",
+    coverageRows.length ? `${coverageRows.length} stocks still have insufficient scenario data.` : "",
+    ...portfolio.warnings.slice(0, 3)
+  ].filter(Boolean);
+  const workflowSteps = [
+    { label: "Load Universe", complete: stocks.length > 0 },
+    { label: "Check Data Coverage", complete: analyses.length > 0 },
+    { label: "Preview Scan", complete: Boolean(coverageScanPreview) || scanRoiHistory.length > 0 },
+    { label: "Confirm Scan", complete: scanRoiHistory.length > 0 },
+    { label: "Review Candidates", complete: reliableAnalyses.length > 0 },
+    { label: "Review Valuation / Scenario", complete: validScenarioAnalyses.length > 0 },
+    { label: "Add to Watchlist or Portfolio", complete: watchlist.length > 0 || holdings.length > 0 }
+  ];
 
   return (
-    <div className="grid min-w-0 gap-4 sm:gap-6">
-      <section className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-accent">{t.eyebrow}</div>
-          <h1 className="mt-2 break-words text-2xl font-semibold text-ink sm:text-3xl">{t.title}</h1>
-          <p className="mt-2 max-w-3xl break-words text-sm leading-6 text-muted">{t.subtitle}</p>
-        </div>
-        <Badge>{t.researchOnly}</Badge>
-      </section>
+    <div className="grid min-w-0 gap-5 sm:gap-6">
+      <SectionHeader
+        eyebrow={t.eyebrow}
+        title={t.title}
+        description={t.subtitle}
+        action={<StatusBadge tone="positive">{t.researchOnly}</StatusBadge>}
+      />
 
-      <div className="grid min-w-0 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
-        <Metric icon={Database} label={t.dataSource} value="Local Universe + FMP + SEC EDGAR" />
-        <Metric icon={DownloadCloud} label={t.cacheStatus} value={`App ${dailyFmpCalls} | Safe remaining ${remainingFmpQuota}`} />
-        <Metric icon={RefreshCcw} label={t.lastUpdated} value={formatDateTime(lastUpdated)} />
-        <Metric icon={AlertTriangle} label="Status" value={stale ? t.stale : status} />
-      </div>
+      <nav
+        aria-label="Investment Lab sections"
+        className="sticky top-[73px] z-[5] flex min-w-0 gap-1 overflow-x-auto rounded-lg border border-stroke bg-panel/95 p-1.5 shadow-soft backdrop-blur [scrollbar-width:none] xl:top-3 [&::-webkit-scrollbar]:hidden"
+      >
+        {INVESTMENT_TABS.map((tab) => {
+          const Icon = tab.icon;
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => changeActiveTab(tab.id)}
+              className={cn(
+                "focus-ring flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted transition",
+                active ? "bg-canvas text-ink shadow-sm" : "hover:bg-canvas/60 hover:text-ink"
+              )}
+              aria-current={active ? "page" : undefined}
+            >
+              <Icon className="h-4 w-4" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </nav>
 
-      <FmpQuotaReconciliation
+      {busy ? <LoadingState label="Investment Lab is updating local research data..." /> : null}
+      {!busy && backendOnline === false && (activeTab === "scanner" || activeTab === "coverage") ? (
+        <ErrorState title="Backend offline" description={BACKEND_OFFLINE_MESSAGE} />
+      ) : null}
+
+      {activeTab === "overview" ? (
+        <>
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Valid Stocks" value={validScenarioCount} helper={`${analyses.length} total universe records`} icon={<DatabaseZap className="h-4 w-4" />} tone="positive" />
+            <MetricCard label="Insufficient Data" value={coverageRows.length} helper={`${coverageRows.filter((row) => row.secFcfAvailable).length} already have SEC FCF`} icon={<AlertTriangle className="h-4 w-4" />} tone={coverageRows.length ? "caution" : "positive"} />
+            <MetricCard label="Safe FMP Calls" value={remainingFmpQuota} helper={`${officialFmpUsed} of ${officialFmpLimit} official calls used`} icon={<DownloadCloud className="h-4 w-4" />} />
+            <MetricCard label="Scan ROI" value={lifetimeScanRoi.callsPerNewValidStock === null ? "--" : lifetimeScanRoi.callsPerNewValidStock.toFixed(1)} helper="Average calls per new valid stock" icon={<TrendingUp className="h-4 w-4" />} />
+          </div>
+
+          <InvestmentWorkflow steps={workflowSteps} onSelect={changeActiveTab} />
+
+          <div className="grid min-w-0 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+            <DashboardCard className="p-4 sm:p-5">
+              <SectionHeader title="Decision Snapshot" description="Reliable candidates and scenario conclusions first." />
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <OverviewList title="Best Candidates" rows={rankings.top.length ? rankings.top.slice(0, 5) : rankings.reliable.slice(0, 5)} language={language} empty="No reliable buy candidates yet." />
+                <OverviewList title="Best Scenario Risk / Reward" rows={scenarioRankings.bestRiskReward.slice(0, 5)} language={language} empty="No measurable scenario risk/reward yet." showScenario />
+              </div>
+            </DashboardCard>
+
+            <DashboardCard className="p-4 sm:p-5">
+              <SectionHeader title="Top Warnings" description="Items most likely to block a useful decision." />
+              <div className="mt-4 grid gap-2">
+                {overviewWarnings.length ? overviewWarnings.slice(0, 6).map((warning) => (
+                  <div key={warning} className="flex min-w-0 items-start gap-2 rounded-md border border-stroke bg-canvas px-3 py-2 text-sm text-muted">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" />
+                    <span className="break-words">{warning}</span>
+                  </div>
+                )) : (
+                  <EmptyState title="No major warnings" description="Current research data has no high-priority workflow warnings." />
+                )}
+              </div>
+            </DashboardCard>
+          </div>
+        </>
+      ) : null}
+
+      {activeTab === "coverage" ? <FmpQuotaReconciliation
         appTrackedCalls={dailyFmpCalls}
         officialUsed={officialFmpUsed}
         officialLimit={officialFmpLimit}
@@ -3895,8 +4020,9 @@ export function InvestmentLab() {
         stats={fmpAttemptStats}
         onChange={saveFmpQuotaReconciliation}
         onReset={resetFmpDailyUsage}
-      />
+      /> : null}
 
+      {activeTab === "scanner" ? <>
       <ScanRoiDashboard
         history={scanRoiHistory}
         today={todaysScanRoi}
@@ -3906,27 +4032,8 @@ export function InvestmentLab() {
         lifetime={lifetimeScanRoi}
         permanentlyBlockedEndpointIds={permanentlyBlockedEndpointIds}
       />
-
-      <SecCoverageManager
-        rows={secCoverageRows}
-        cache={cacheInfo}
-        stats={secCoverageStats}
-        busy={busy}
-        backendOnline={backendOnline}
-        onScan={(limit) => void runSecCoverageBatch(limit)}
-      />
-
-      <SecRawInspector
-        cache={cacheInfo}
-        ticker={secInspectorTicker}
-        busy={busy}
-        backendOnline={backendOnline}
-        onTickerChange={setSecInspectorTicker}
-        onLoad={() => void runSecCoverageBatch(1, [secInspectorTicker])}
-        onRefresh={() => void runSecCoverageBatch(1, [secInspectorTicker], true)}
-      />
-
       <DataCoverageManager
+        view="scanner"
         totalStocks={analyses.length}
         validStocks={validScenarioCount}
         coverageRows={coverageRows}
@@ -3954,8 +4061,66 @@ export function InvestmentLab() {
         onManualSave={saveCoverageManualFix}
         lastHybridBatch={lastScanRoiBatch}
       />
+      </> : null}
 
-      <CollapsibleCard
+      {activeTab === "coverage" ? <>
+      <SecCoverageManager
+        rows={secCoverageRows}
+        cache={cacheInfo}
+        stats={secCoverageStats}
+        busy={busy}
+        backendOnline={backendOnline}
+        onScan={(limit) => void runSecCoverageBatch(limit)}
+      />
+      <FmpCapabilityPanel
+        capabilities={fmpCapabilities}
+        testStatus={fmpTestStatus}
+        disabled={busy || !allocation.fmp_api_key.trim() || remainingFmpQuota <= 0}
+        onTest={() => void testFmpApiKey()}
+      />
+      </> : null}
+
+      {activeTab === "diagnostics" ? <SecRawInspector
+        cache={cacheInfo}
+        ticker={secInspectorTicker}
+        busy={busy}
+        backendOnline={backendOnline}
+        onTickerChange={setSecInspectorTicker}
+        onLoad={() => void runSecCoverageBatch(1, [secInspectorTicker])}
+        onRefresh={() => void runSecCoverageBatch(1, [secInspectorTicker], true)}
+      /> : null}
+
+      {activeTab === "coverage" ? <DataCoverageManager
+        view="coverage"
+        totalStocks={analyses.length}
+        validStocks={validScenarioCount}
+        coverageRows={coverageRows}
+        distribution={coverageDistribution}
+        scannedToday={scannedToday.size}
+        remainingQuota={remainingFmpQuota}
+        estimatedDays={estimatedCoverageDays}
+        pendingCalls={pendingCoverageCalls}
+        cacheAudit={fmpCacheAudit}
+        cacheRepairSummary={cacheRepairSummary}
+        onRepairCaches={repairFmpCaches}
+        busy={busy}
+        hasApiKey={Boolean(allocation.fmp_api_key.trim())}
+        prioritySettings={scanPrioritySettings}
+        onPrioritySettingsChange={saveScanPrioritySettings}
+        preview={coverageScanPreview}
+        onPreview={previewCoverageBatch}
+        onConfirm={() => void confirmCoverageBatch()}
+        onCancel={() => {
+          setCoverageScanPreview(null);
+          setStatus("Make Valid scan preview cancelled. No FMP requests were sent.");
+        }}
+        manualDrafts={coverageManualDrafts}
+        onManualChange={updateCoverageManualDraft}
+        onManualSave={saveCoverageManualFix}
+        lastHybridBatch={lastScanRoiBatch}
+      /> : null}
+
+      {activeTab === "valuation" ? <CollapsibleCard
         title={language === "zh" ? "DCF 假设控制" : "DCF Assumption Controls"}
         badge={<Badge>{language === "zh" ? "全局模型输入" : "Global model inputs"}</Badge>}
         defaultOpen
@@ -3972,9 +4137,9 @@ export function InvestmentLab() {
               ? "这些假设会影响 DCF、公允价值区间、保守买入价、推荐信心和警告。折现率必须高于永续增长率；系统会自动限制极端输入。"
               : "These assumptions affect DCF, fair value range, conservative buy price, recommendation confidence, and warnings. Discount rate must stay above terminal growth; extreme inputs are bounded by the model."}
           </div>
-      </CollapsibleCard>
+      </CollapsibleCard> : null}
 
-      <CollapsibleCard
+      {activeTab === "scenario" ? <CollapsibleCard
         title="Scenario Probability Controls"
         badge={<Badge>{scenarioProbabilitiesValid ? "Valid: 100%" : "Using default 25 / 50 / 25"}</Badge>}
         defaultOpen
@@ -4003,9 +4168,9 @@ export function InvestmentLab() {
             ? ` Weighted valuation uses Bear ${effectiveScenarioProbabilities.bear}%, Base ${effectiveScenarioProbabilities.base}%, Bull ${effectiveScenarioProbabilities.bull}%.`
             : " Probabilities must be non-negative and add to 100%. Calculations are using the default Bear 25%, Base 50%, Bull 25% until the inputs are valid."}
         </div>
-      </CollapsibleCard>
+      </CollapsibleCard> : null}
 
-      <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
+      {activeTab === "scanner" ? <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle>{t.stockInput}</CardTitle>
@@ -4079,21 +4244,8 @@ export function InvestmentLab() {
             {fmpTestStatus ? (
               <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">{fmpTestStatus}</div>
             ) : null}
-            <div className="grid gap-2 rounded-lg border border-stroke bg-canvas p-3">
-              <div className="text-sm font-medium text-ink">FMP Endpoint Capability Test</div>
-              {FMP_CAPABILITY_DEFINITIONS.map((definition) => {
-                const capability = fmpCapabilities[definition.id];
-                return (
-                  <div key={definition.id} className="grid gap-1 rounded-md border border-stroke bg-panel px-3 py-2 text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-medium text-ink">{definition.label}</span>
-                      <Badge>{fmpCapabilityStatusLabel(capability.status)}</Badge>
-                    </div>
-                    <div className="text-muted">Status: {capability.httpStatus ?? "--"} - {formatDateTime(capability.testedAt, "not tested")}</div>
-                    <div className="break-words text-muted">Preview: {capability.preview || "--"}</div>
-                  </div>
-                );
-              })}
+            <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">
+              Endpoint availability, quota reconciliation, and blocked-plan memory are available in Data Coverage.
             </div>
             <Button type="button" variant="secondary" onClick={runFmpScan} disabled={busy || !allocation.fmp_api_key.trim()}>
               <DownloadCloud className="h-4 w-4" />
@@ -4110,13 +4262,15 @@ export function InvestmentLab() {
             </div>
           </CardContent>
         </Card>
-      </div>
+      </div> : null}
 
-      <FmpFieldMappingAudit stocks={stocks} />
-      <FmpMappingRepairComparison rows={mappingComparisons} />
-      <FmpRawResponseInspector stocks={stocks} cache={cacheInfo} />
+      {activeTab === "diagnostics" ? <>
+        <FmpFieldMappingAudit stocks={stocks} />
+        <FmpMappingRepairComparison rows={mappingComparisons} />
+        <FmpRawResponseInspector stocks={stocks} cache={cacheInfo} />
+      </> : null}
 
-      <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
+      {activeTab === "portfolio" ? <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
         <PortfolioCard
           language={language}
           title={t.portfolio}
@@ -4128,9 +4282,9 @@ export function InvestmentLab() {
           deleteHolding={(id) => saveHoldings(holdings.filter((holding) => holding.id !== id))}
         />
         <AllocationCard language={language} title={t.allocation} allocation={allocation} saveAllocation={saveAllocation} />
-      </div>
+      </div> : null}
 
-      <CollapsibleCard title={t.rankings} icon={<BarChart3 className="h-4 w-4 shrink-0 text-accent" />} defaultOpen contentClassName="overflow-x-auto">
+      {activeTab === "valuation" ? <CollapsibleCard title={t.rankings} icon={<BarChart3 className="h-4 w-4 shrink-0 text-accent" />} defaultOpen contentClassName="overflow-x-auto">
         <div className="grid min-w-0 gap-4 sm:gap-6">
           <div className="grid min-w-0 gap-4 lg:grid-cols-2 sm:gap-6">
             <Ranking title={t.reliableCandidates} rows={rankings.reliable} language={language} />
@@ -4146,19 +4300,212 @@ export function InvestmentLab() {
           </div>
           <Ranking title={t.avoidList} rows={rankings.avoid} language={language} wide />
         </div>
-      </CollapsibleCard>
+      </CollapsibleCard> : null}
 
-      <RankingAudit rows={rankingAuditRows} />
-      <PrimaryDcfAudit analyses={analyses} />
-      <ReverseDcfAudit analyses={analyses} assumptions={assumptions} />
-      <ScenarioDecisionRankings rankings={scenarioRankings} />
-      <ScenarioValuationAudit analyses={analyses} />
+      {activeTab === "diagnostics" ? <>
+        <RankingAudit rows={rankingAuditRows} />
+        <PrimaryDcfAudit analyses={analyses} />
+        <ScenarioValuationAudit analyses={analyses} />
+        <DataSourceDiagnostics analyses={analyses} cache={cacheInfo} />
+      </> : null}
 
-      <div className="grid min-w-0 gap-4 sm:gap-6 2xl:grid-cols-[1fr_0.85fr]">
-        <AnalysisDetail title="Recommendation Detail / 推荐详情" rows={analyses.slice(0, 12)} language={language} cache={cacheInfo} assumptions={assumptions} />
+      {activeTab === "valuation" ? <>
+        <ReverseDcfAudit analyses={analyses} assumptions={assumptions} />
+        <AnalysisDetail title="Valuation Conclusions / 估值结论" rows={analyses.slice(0, 12)} language={language} cache={cacheInfo} assumptions={assumptions} />
+      </> : null}
+
+      {activeTab === "scenario" ? <>
+        <ScenarioDecisionRankings rankings={scenarioRankings} />
+        <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+          {validScenarioAnalyses.length > 0 ? validScenarioAnalyses.slice(0, 12).map((analysis) => (
+            <DashboardCard key={analysis.stock.id} className="min-w-0" padding="compact">
+              <ScenarioValuationEngine analysis={analysis} />
+            </DashboardCard>
+          )) : (
+            <EmptyState
+              title="No valid scenario data"
+              description="Complete price, FCF, share count, and historical data before relying on scenario decisions."
+              className="xl:col-span-2"
+            />
+          )}
+        </div>
+      </> : null}
+
+      {activeTab === "portfolio" ? <div className="grid min-w-0 gap-4 sm:gap-6">
         <WatchlistCard title={t.watchlist} language={language} watchlist={watchlist} draft={watchDraft} setDraft={setWatchDraft} saveWatch={saveWatch} deleteWatch={(id) => saveWatchlist(watchlist.filter((item) => item.id !== id))} />
-      </div>
+      </div> : null}
     </div>
+  );
+}
+
+function InvestmentWorkflow({
+  steps,
+  onSelect
+}: {
+  steps: Array<{ label: string; complete: boolean }>;
+  onSelect: (tab: InvestmentTab) => void;
+}) {
+  const targetTabs: InvestmentTab[] = ["scanner", "coverage", "scanner", "scanner", "overview", "scenario", "portfolio"];
+  const completed = steps.filter((step) => step.complete).length;
+  return (
+    <DashboardCard padding="default">
+      <SectionHeader
+        title="Investment Research Workflow"
+        description="A compact path from universe loading to a documented watchlist or portfolio decision."
+        action={<StatusBadge tone={completed === steps.length ? "positive" : "neutral"}>{completed} / {steps.length} complete</StatusBadge>}
+      />
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {steps.map((step, index) => (
+          <button
+            key={step.label}
+            type="button"
+            onClick={() => onSelect(targetTabs[index])}
+            className="focus-ring flex min-w-0 items-center gap-3 rounded-md border border-stroke bg-canvas px-3 py-3 text-left transition hover:border-accent/40 hover:bg-panel"
+          >
+            <span className={cn(
+              "grid h-7 w-7 shrink-0 place-items-center rounded-md border text-xs font-semibold",
+              step.complete ? "border-positive/30 bg-positive/10 text-positive" : "border-stroke bg-panel text-muted"
+            )}>
+              {index + 1}
+            </span>
+            <span className="min-w-0">
+              <span className="block break-words text-sm font-medium text-ink">{step.label}</span>
+              <span className="mt-0.5 block text-xs text-muted">{step.complete ? "Complete" : "Open step"}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </DashboardCard>
+  );
+}
+
+function OverviewList({
+  title,
+  rows,
+  language,
+  empty,
+  showScenario = false
+}: {
+  title: string;
+  rows: StockAnalysis[];
+  language: Language;
+  empty: string;
+  showScenario?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-2 text-sm font-semibold text-ink">{title}</div>
+      {rows.length ? (
+        <DataTableWrapper>
+          <table className="w-full min-w-[420px] text-left text-sm">
+            <thead className="border-b border-stroke bg-canvas text-xs text-muted">
+              <tr>
+                <th className="px-3 py-2 font-medium">Stock</th>
+                <th className="px-3 py-2 font-medium">Decision</th>
+                <th className="px-3 py-2 text-right font-medium">{showScenario ? "Risk / Reward" : "Score"}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((analysis) => {
+                const scenario = analysis.valuation.scenarioValuation;
+                return (
+                  <tr key={analysis.stock.id} className="border-b border-stroke/70 last:border-0">
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-ink">{analysis.stock.ticker}</div>
+                      <div className="max-w-40 truncate text-xs text-muted">{analysis.stock.company_name || "Company name unavailable"}</div>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted">
+                      {showScenario ? scenario.decisionLabel : recommendationLabel(language, analysis.recommendation)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold text-ink">
+                      {showScenario ? comparisonValue(scenario.riskRewardRatio) : analysis.totalScore}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </DataTableWrapper>
+      ) : (
+        <EmptyState title="No results yet" description={empty} />
+      )}
+    </div>
+  );
+}
+
+function FmpCapabilityPanel({
+  capabilities,
+  testStatus,
+  disabled,
+  onTest
+}: {
+  capabilities: Record<FmpCapabilityId, FmpCapabilityResult>;
+  testStatus: string;
+  disabled: boolean;
+  onTest: () => void;
+}) {
+  return (
+    <CollapsiblePanel
+      title="FMP Endpoint Capability"
+      description="Review available, blocked, and untested endpoints before spending quota."
+      badge={<StatusBadge>{FMP_CAPABILITY_DEFINITIONS.filter((definition) => capabilities[definition.id].status === "available").length} available</StatusBadge>}
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm text-muted">{testStatus || "Capability results are stored locally and reused by scan planning."}</div>
+        <Button type="button" variant="ghost" onClick={onTest} disabled={disabled}>Test Capabilities</Button>
+      </div>
+      <DataTableWrapper>
+        <table className="w-full min-w-[720px] text-left text-sm">
+          <thead className="border-b border-stroke bg-canvas text-xs text-muted">
+            <tr>
+              <th className="px-3 py-2 font-medium">Endpoint</th>
+              <th className="px-3 py-2 font-medium">Capability</th>
+              <th className="px-3 py-2 font-medium">HTTP</th>
+              <th className="px-3 py-2 font-medium">Last Tested</th>
+              <th className="px-3 py-2 font-medium">Response Preview</th>
+            </tr>
+          </thead>
+          <tbody>
+            {FMP_CAPABILITY_DEFINITIONS.map((definition) => {
+              const capability = capabilities[definition.id];
+              return (
+                <tr key={definition.id} className="border-b border-stroke/70 last:border-0">
+                  <td className="px-3 py-2 font-medium text-ink">{definition.label}</td>
+                  <td className="px-3 py-2"><StatusBadge tone={capability.status === "available" ? "positive" : capability.status === "premium blocked" ? "caution" : capability.status === "error" ? "danger" : "neutral"}>{fmpCapabilityStatusLabel(capability.status)}</StatusBadge></td>
+                  <td className="px-3 py-2 text-muted">{capability.httpStatus ?? "--"}</td>
+                  <td className="px-3 py-2 text-muted">{formatDateTime(capability.testedAt, "not tested")}</td>
+                  <td className="max-w-80 truncate px-3 py-2 text-muted" title={capability.preview}>{capability.preview || "--"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </DataTableWrapper>
+    </CollapsiblePanel>
+  );
+}
+
+function DataSourceDiagnostics({
+  analyses,
+  cache
+}: {
+  analyses: StockAnalysis[];
+  cache: InvestmentCache;
+}) {
+  return (
+    <CollapsiblePanel
+      title="Data Source Audit"
+      description="Advanced per-component source provenance. Closed by default to keep conclusions visible first."
+      badge={<StatusBadge>{Math.min(analyses.length, 12)} records</StatusBadge>}
+    >
+      <div className="grid gap-3">
+        {analyses.length ? analyses.slice(0, 12).map((analysis) => (
+          <DataSourceAudit key={analysis.stock.id} analysis={analysis} cache={cache} />
+        )) : (
+          <EmptyState title="No data to audit" description="Load or add stock records before reviewing source provenance." />
+        )}
+      </div>
+    </CollapsiblePanel>
   );
 }
 
@@ -4191,6 +4538,8 @@ function CollapsibleCard({
         </div>
         <div className="flex max-w-full shrink-0 items-center gap-2">
           {badge}
+          <span className="hidden text-xs text-muted sm:inline group-open:hidden">Show details</span>
+          <span className="hidden text-xs text-muted group-open:sm:inline">Hide details</span>
           <ChevronDown className="h-4 w-4 text-muted transition-transform group-open:rotate-180" aria-hidden />
         </div>
       </summary>
@@ -4633,6 +4982,7 @@ function SecRawInspector({
 }
 
 function DataCoverageManager({
+  view,
   totalStocks,
   validStocks,
   coverageRows,
@@ -4657,6 +5007,7 @@ function DataCoverageManager({
   onManualSave,
   lastHybridBatch
 }: {
+  view: "scanner" | "coverage";
   totalStocks: number;
   validStocks: number;
   coverageRows: CoverageRow[];
@@ -4719,11 +5070,13 @@ function DataCoverageManager({
   };
   return (
     <CollapsibleCard
-      title="Investment Data Coverage Manager"
-      badge={<Badge>{validStocks} valid / {coverageRows.length} insufficient</Badge>}
+      title={view === "scanner" ? "Make Valid Scanner" : "Investment Data Coverage Manager"}
+      badge={<Badge>{view === "scanner" ? `${scannableRows.length} queued` : `${validStocks} valid / ${coverageRows.length} insufficient`}</Badge>}
       defaultOpen
       contentClassName="grid gap-5"
     >
+      {view === "coverage" ? (
+        <>
       <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <ValueBox label="Total Universe Stocks" value={`${totalStocks}`} />
         <ValueBox label="Valid Scenario Stocks" value={`${validStocks}`} />
@@ -4754,7 +5107,10 @@ function DataCoverageManager({
           </div>
         </div>
       ) : null}
+        </>
+      ) : null}
 
+      {view === "scanner" ? (
       <div className="grid min-w-0 gap-4 rounded-lg border border-stroke bg-canvas p-3 sm:p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -4847,7 +5203,9 @@ function DataCoverageManager({
           </div>
         )}
       </div>
+      ) : null}
 
+      {view === "coverage" ? (
       <div className="grid min-w-0 gap-4 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-lg border border-stroke bg-canvas p-3">
           <div className="text-sm font-medium text-ink">Missing Data Summary</div>
@@ -4883,7 +5241,10 @@ function DataCoverageManager({
           </div>
         </div>
       </div>
+      ) : null}
 
+      {view === "scanner" ? (
+        <>
       <div className="grid min-w-0 gap-4 rounded-lg border border-stroke bg-canvas p-3 sm:p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -5074,7 +5435,10 @@ function DataCoverageManager({
           </div>
         </div>
       ) : null}
+        </>
+      ) : null}
 
+      {view === "coverage" ? (
       <div>
         <div className="mb-2 text-sm font-medium text-ink">Hybrid Validity Checklist</div>
         <div className="overflow-x-auto rounded-lg border border-stroke">
@@ -5173,21 +5537,8 @@ function DataCoverageManager({
           <div className="mt-2 text-xs text-muted">Showing the top {visibleRows.length} prioritized stocks out of {coverageRows.length} insufficient records.</div>
         ) : null}
       </div>
+      ) : null}
     </CollapsibleCard>
-  );
-}
-
-function Metric({ icon: Icon, label, value }: { icon: typeof Database; label: string; value: string }) {
-  return (
-    <Card className="min-w-0">
-      <CardContent className="grid min-w-0 gap-3 p-4 sm:p-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 break-words text-sm text-muted">{label}</div>
-          <Icon className="h-4 w-4 text-accent" />
-        </div>
-        <div className="min-w-0 break-words text-lg font-semibold text-ink">{value}</div>
-      </CardContent>
-    </Card>
   );
 }
 
