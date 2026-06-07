@@ -58,6 +58,23 @@ def test_imported_trade_remains_incomplete_until_review_fields_and_stop_exist():
     quality = classify_trade_quality(imported_trade_payload())
 
     assert quality["data_quality"] == "incomplete"
-    assert {"stop", "result_r", "setup_type", "regime_label", "manual_quality", "notes"}.issubset(
+    assert {"stop", "result_r", "setup_type", "manual_quality"}.issubset(
         set(quality["missing_fields"])
     )
+    assert "regime_label" not in quality["missing_fields"]
+    assert "notes" not in quality["missing_fields"]
+
+
+def test_imported_trade_becomes_good_when_edge_lab_fields_and_r_are_complete():
+    payload = {
+        **imported_trade_payload(),
+        "stop_loss": "30170",
+        "result_r": "2.05",
+        "setup_type": "Fabio Long",
+        "manual_quality": "A",
+    }
+
+    quality = classify_trade_quality(payload)
+
+    assert quality["data_quality"] == "good"
+    assert quality["missing_fields"] == []

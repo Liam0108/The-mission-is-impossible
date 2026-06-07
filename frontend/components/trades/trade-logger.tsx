@@ -1,10 +1,11 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Copy, Download, FileSpreadsheet, ImageUp, Pencil, Plus, Save, Trash2, Upload } from "lucide-react";
+import { Check, Copy, Download, FileSpreadsheet, ImageUp, Pencil, Plus, Save, Trash2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field } from "@/components/ui/field";
+import { StatusBadge } from "@/components/ui/dashboard";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -39,6 +40,15 @@ import {
   YES_NO
 } from "@/lib/constants";
 import { getStoredLanguage, optionLabel, tradeCopy, type Language } from "@/lib/i18n";
+import {
+  calculateImportedResultR,
+  edgeLabEligibility,
+  importedTradeCompleteness,
+  importedTradeMissingFields,
+  missingRReason,
+  prioritizeImportedReviews,
+  summarizeImportedTrades
+} from "@/lib/import-review";
 import type { Trade, TradePayload } from "@/lib/types";
 import { cn, formatR } from "@/lib/utils";
 
@@ -214,14 +224,6 @@ function resultRFor(result: string, rr: number | null) {
   return 0;
 }
 
-function resultRFromImportedTrade(trade: Trade, stopLoss: number | null | undefined) {
-  if (trade.entry_price === null || trade.exit_price === null || stopLoss === null || stopLoss === undefined) return null;
-  const risk = Math.abs(trade.entry_price - stopLoss);
-  if (!risk) return null;
-  const reward = trade.direction === "Long" ? trade.exit_price - trade.entry_price : trade.entry_price - trade.exit_price;
-  return Number((reward / risk).toFixed(2));
-}
-
 function formatNullableR(value: number | null | undefined, fallback: string) {
   return value === null || value === undefined || !Number.isFinite(value) ? fallback : formatR(value);
 }
@@ -247,11 +249,15 @@ export function TradeLogger() {
   const [reviewScreenshot, setReviewScreenshot] = useState<File | null>(null);
   const [selectedReviewIds, setSelectedReviewIds] = useState<string[]>([]);
   const [reviewStatusMessage, setReviewStatusMessage] = useState("");
+  const [reviewSkipReason, setReviewSkipReason] = useState("");
   const [batchReviewDraft, setBatchReviewDraft] = useState<{
     session: string;
     setup_type: string;
+    regime_label: string;
     manual_quality: string;
-  }>({ session: "", setup_type: "", manual_quality: "" });
+    location: string;
+    stop_loss: string;
+  }>({ session: "", setup_type: "", regime_label: "", manual_quality: "", location: "", stop_loss: "" });
   const csvInput = useRef<HTMLInputElement | null>(null);
   const brokerCsvInput = useRef<HTMLInputElement | null>(null);
   const screenshotInput = useRef<HTMLInputElement | null>(null);
@@ -259,7 +265,8 @@ export function TradeLogger() {
 
   const sortedTrades = useMemo(() => [...trades].sort((a, b) => b.date.localeCompare(a.date)), [trades]);
   const lastTrade = sortedTrades[0];
-  const unreviewedTrades = useMemo(() => sortedTrades.filter((trade) => trade.imported && trade.review_status === "unreviewed"), [sortedTrades]);
+  const importedSummary = useMemo(() => summarizeImportedTrades(trades), [trades]);
+  const unreviewedTrades = useMemo(() => prioritizeImportedReviews(trades), [trades]);
   const currentReviewTrade = useMemo(
     () => unreviewedTrades.find((trade) => trade.id === reviewTradeId) ?? unreviewedTrades[0] ?? null,
     [reviewTradeId, unreviewedTrades]
@@ -272,8 +279,24 @@ export function TradeLogger() {
   const reviewResultR = useMemo(() => {
     if (!currentReviewTrade) return null;
     const stopLoss = reviewDraft.stop_loss === undefined ? currentReviewTrade.stop_loss : reviewDraft.stop_loss;
-    return resultRFromImportedTrade(currentReviewTrade, stopLoss);
+    return calculateImportedResultR(currentReviewTrade, stopLoss);
   }, [currentReviewTrade, reviewDraft.stop_loss]);
+  const reviewPreview = useMemo(() => {
+    if (!currentReviewTrade) return null;
+    return {
+      ...currentReviewTrade,
+      ...reviewDraft,
+      result_r: reviewResultR
+    } as Trade;
+  }, [currentReviewTrade, reviewDraft, reviewResultR]);
+  const reviewCompleteness = useMemo(
+    () => reviewPreview ? importedTradeCompleteness(reviewPreview) : null,
+    [reviewPreview]
+  );
+  const reviewEligibility = useMemo(
+    () => reviewPreview ? edgeLabEligibility(reviewPreview) : null,
+    [reviewPreview]
+  );
   const distances = useMemo(() => calculateDistances(form), [form]);
   const copy = tradeCopy(language);
   const englishCopy = tradeCopy("en");
@@ -332,6 +355,7 @@ export function TradeLogger() {
       notes: currentReviewTrade.notes ?? ""
     });
     setReviewScreenshot(null);
+    setReviewSkipReason("");
   }, [currentReviewTrade]);
 
   useEffect(() => {
@@ -486,11 +510,19 @@ export function TradeLogger() {
   async function applyBatchReviewFields() {
     if (!selectedReviewIds.length) return;
     const payload: Partial<TradePayload> = {};
+    const hasExplicitStopLoss = batchReviewDraft.stop_loss.trim() !== "";
     if (batchReviewDraft.session) payload.session = batchReviewDraft.session;
     if (batchReviewDraft.setup_type) payload.setup_type = batchReviewDraft.setup_type;
+    if (batchReviewDraft.regime_label) payload.regime_label = batchReviewDraft.regime_label;
     if (batchReviewDraft.manual_quality) payload.manual_quality = batchReviewDraft.manual_quality;
-    if (!Object.keys(payload).length) {
+    if (batchReviewDraft.location) payload.location = batchReviewDraft.location;
+    if (!Object.keys(payload).length && !hasExplicitStopLoss) {
       setError("Choose at least one batch field before applying.");
+      return;
+    }
+    const explicitStopLoss = hasExplicitStopLoss ? numberOrNull(batchReviewDraft.stop_loss) : null;
+    if (hasExplicitStopLoss && (explicitStopLoss === null || !Number.isFinite(explicitStopLoss))) {
+      setError("Enter a valid stop loss before applying it in batch.");
       return;
     }
 
@@ -498,7 +530,14 @@ export function TradeLogger() {
     let updated = 0;
     try {
       for (const tradeId of selectedReviewIds) {
-        await api.updateTrade(tradeId, payload);
+        const selectedTrade = unreviewedTrades.find((trade) => trade.id === tradeId);
+        if (!selectedTrade) continue;
+        const tradePayload = { ...payload };
+        if (hasExplicitStopLoss) {
+          tradePayload.stop_loss = explicitStopLoss;
+          tradePayload.result_r = calculateImportedResultR(selectedTrade, explicitStopLoss);
+        }
+        await api.updateTrade(tradeId, tradePayload);
         updated += 1;
       }
       setError(null);
@@ -514,12 +553,16 @@ export function TradeLogger() {
 
   async function saveReviewAndNext() {
     if (!currentReviewTrade) return;
+    if (!reviewEligibility?.eligible) {
+      setError(`Complete required Edge Lab fields before marking Reviewed: ${reviewEligibility?.missing.join(", ") || "unknown fields"}.`);
+      return;
+    }
     setBusy(true);
     try {
       const stopLoss = reviewDraft.stop_loss === undefined ? currentReviewTrade.stop_loss : reviewDraft.stop_loss;
       const payload: Partial<TradePayload> = {
         ...reviewDraft,
-        result_r: resultRFromImportedTrade(currentReviewTrade, stopLoss),
+        result_r: calculateImportedResultR(currentReviewTrade, stopLoss),
         review_status: "reviewed"
       };
       const saved = await api.updateTrade(currentReviewTrade.id, payload);
@@ -532,6 +575,33 @@ export function TradeLogger() {
       setReviewStatusMessage("Trade reviewed. The next Unreviewed trade is ready.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save imported trade review");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function skipReviewWithReason() {
+    if (!currentReviewTrade) return;
+    const reason = reviewSkipReason.trim();
+    if (!reason) {
+      setError("Add a reason before skipping this review.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const timestamp = new Date().toISOString().slice(0, 10);
+      const previous = currentReviewTrade.review_notes?.trim();
+      await api.updateTrade(currentReviewTrade.id, {
+        review_notes: [previous, `[Review deferred ${timestamp}] ${reason}`].filter(Boolean).join("\n"),
+        review_status: "unreviewed"
+      });
+      setReviewTradeId(nextReviewTrade?.id ?? null);
+      setReviewSkipReason("");
+      await loadTrades();
+      setError(null);
+      setReviewStatusMessage("Review deferred with a reason. The trade remains Unreviewed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to defer imported trade review");
     } finally {
       setBusy(false);
     }
@@ -724,6 +794,50 @@ export function TradeLogger() {
           <div className="text-sm text-muted">{unreviewedTrades.length} Unreviewed</div>
         </CardHeader>
         <CardContent className="grid min-w-0 gap-5">
+          <section className="grid gap-3">
+            <div>
+              <div className="text-sm font-medium text-ink">Imported Trade Data Completeness</div>
+              <div className="mt-1 text-xs text-muted">Tracks every broker-imported trade, including records already reviewed.</div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+              <ImportMetric label="Total Imported" value={importedSummary.totalImported} />
+              <ImportMetric label="Unreviewed" value={importedSummary.unreviewed} />
+              <ImportMetric label="Reviewed" value={importedSummary.reviewed} />
+              <ImportMetric label="Missing Stop Loss" value={importedSummary.missingStopLoss} />
+              <ImportMetric label="Missing Setup Type" value={importedSummary.missingSetupType} />
+              <ImportMetric label="Missing Session" value={importedSummary.missingSession} />
+              <ImportMetric label="Missing Regime" value={importedSummary.missingRegimeLabel} />
+              <ImportMetric label="Missing Manual Quality" value={importedSummary.missingManualQuality} />
+              <ImportMetric label="Missing Notes" value={importedSummary.missingNotes} />
+              <ImportMetric label="R Calculated" value={importedSummary.withResultR} />
+              <ImportMetric label="R Still --" value={importedSummary.withoutResultR} />
+              <ImportMetric label="R Completion Rate" value={`${importedSummary.rCompletionRate}%`} />
+            </div>
+            <div className="rounded-lg border border-stroke bg-canvas p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium text-ink">R Completion</div>
+                  <div className="mt-1 text-xs text-muted">
+                    R stays -- until entry, exit, and a valid stop loss are available.
+                  </div>
+                </div>
+                <StatusBadge tone={importedSummary.rCompletionRate === 100 ? "positive" : importedSummary.rCompletionRate >= 50 ? "caution" : "danger"}>
+                  {importedSummary.withResultR} of {importedSummary.totalImported} complete
+                </StatusBadge>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-stroke">
+                <div className="h-full bg-accent transition-all" style={{ width: `${importedSummary.rCompletionRate}%` }} />
+              </div>
+              {importedSummary.missingRReasons.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {importedSummary.missingRReasons.map((item) => (
+                    <StatusBadge key={item.reason} tone="caution">{item.reason}: {item.count}</StatusBadge>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </section>
+
           {reviewStatusMessage ? (
             <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm text-muted">{reviewStatusMessage}</div>
           ) : null}
@@ -733,8 +847,8 @@ export function TradeLogger() {
               <div className="grid min-w-0 gap-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-medium text-ink">Unreviewed Queue</div>
-                    <div className="mt-1 text-xs text-muted">Only imported trades with review_status = Unreviewed appear here.</div>
+                    <div className="text-sm font-medium text-ink">Review Priority List</div>
+                    <div className="mt-1 text-xs text-muted">Missing stop, setup, session, and quality come first; ties use absolute PnL and newest entry.</div>
                   </div>
                   <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
                     <input
@@ -746,23 +860,28 @@ export function TradeLogger() {
                   </label>
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-stroke">
-                  <table className="w-full min-w-[820px] text-left text-sm">
+                  <table className="w-full min-w-[1180px] text-left text-sm">
                     <thead className="bg-canvas text-xs uppercase text-muted">
                       <tr>
                         <th className="w-12 px-3 py-2 font-medium">Select</th>
+                        <th className="px-3 py-2 font-medium">Priority</th>
                         <th className="px-3 py-2 font-medium">Date</th>
                         <th className="px-3 py-2 font-medium">Symbol</th>
                         <th className="px-3 py-2 font-medium">Direction</th>
                         <th className="px-3 py-2 text-right font-medium">PnL</th>
-                        <th className="px-3 py-2 font-medium">Session</th>
-                        <th className="px-3 py-2 font-medium">Setup Type</th>
+                        <th className="px-3 py-2 font-medium">Completeness</th>
+                        <th className="px-3 py-2 font-medium">Missing Fields</th>
                         <th className="px-3 py-2 text-right font-medium">R</th>
+                        <th className="px-3 py-2 font-medium">Edge Lab</th>
                         <th className="px-3 py-2 text-right font-medium">Action</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {unreviewedTrades.map((trade) => (
-                        <tr key={trade.id} className={cn("border-t border-stroke", currentReviewTrade?.id === trade.id && "bg-accent/5")}>
+                      {unreviewedTrades.map((trade, index) => {
+                        const completeness = importedTradeCompleteness(trade);
+                        const eligibility = edgeLabEligibility(trade);
+                        return (
+                          <tr key={trade.id} className={cn("border-t border-stroke", currentReviewTrade?.id === trade.id && "bg-accent/5")}>
                           <td className="px-3 py-2">
                             <input
                               type="checkbox"
@@ -771,18 +890,29 @@ export function TradeLogger() {
                               onChange={() => toggleReviewSelection(trade.id)}
                             />
                           </td>
+                          <td className="px-3 py-2 font-medium text-ink">#{index + 1}</td>
                           <td className="px-3 py-2 text-muted">{trade.date}</td>
                           <td className="px-3 py-2 font-medium text-ink">{trade.broker_symbol ?? trade.instrument}</td>
                           <td className="px-3 py-2 text-muted">{trade.direction}</td>
                           <td className="px-3 py-2 text-right text-muted">{trade.net_pnl ?? copy.notAvailable}</td>
-                          <td className="px-3 py-2 text-muted">{trade.session}</td>
-                          <td className="px-3 py-2 text-muted">{trade.setup_type ?? copy.notAvailable}</td>
-                          <td className="px-3 py-2 text-right text-muted">{formatNullableR(trade.result_r, copy.notAvailable)}</td>
+                          <td className="px-3 py-2">
+                            <StatusBadge tone={completeness.tone}>{completeness.label}</StatusBadge>
+                          </td>
+                          <td className="max-w-72 px-3 py-2 text-xs text-muted">{completeness.missing.join(", ") || "None"}</td>
+                          <td className="px-3 py-2 text-right text-muted" title={missingRReason(trade) ?? "R calculated"}>
+                            {formatNullableR(trade.result_r, copy.notAvailable)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <StatusBadge tone={eligibility.eligible ? "positive" : "caution"}>
+                              {eligibility.eligible ? "Eligible" : `Needs ${eligibility.missing.join(", ")}`}
+                            </StatusBadge>
+                          </td>
                           <td className="px-3 py-2 text-right">
                             <Button type="button" variant="ghost" size="sm" onClick={() => setReviewTradeId(trade.id)}>Review</Button>
                           </td>
-                        </tr>
-                      ))}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -796,7 +926,7 @@ export function TradeLogger() {
                   </div>
                   <div className="text-xs text-muted">{selectedReviewIds.length} selected</div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <Field label="Session">
                     <Select
                       value={batchReviewDraft.session}
@@ -811,11 +941,34 @@ export function TradeLogger() {
                       onChange={(event) => setBatchReviewDraft((current) => ({ ...current, setup_type: event.target.value }))}
                     />
                   </Field>
+                  <Field label="Regime Label">
+                    <Select
+                      value={batchReviewDraft.regime_label}
+                      options={["", ...REGIME_LABELS]}
+                      onChange={(event) => setBatchReviewDraft((current) => ({ ...current, regime_label: event.target.value }))}
+                    />
+                  </Field>
                   <Field label="Manual Quality">
                     <Select
                       value={batchReviewDraft.manual_quality}
                       options={MANUAL_QUALITIES}
                       onChange={(event) => setBatchReviewDraft((current) => ({ ...current, manual_quality: event.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Location">
+                    <Select
+                      value={batchReviewDraft.location}
+                      options={["", ...LOCATIONS]}
+                      onChange={(event) => setBatchReviewDraft((current) => ({ ...current, location: event.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Stop Loss" helper="Applied only when you explicitly enter one value. R is recalculated per selected trade.">
+                    <Input
+                      type="number"
+                      step="0.25"
+                      value={batchReviewDraft.stop_loss}
+                      onChange={(event) => setBatchReviewDraft((current) => ({ ...current, stop_loss: event.target.value }))}
+                      placeholder="Leave blank"
                     />
                   </Field>
                   <div className="flex items-end">
@@ -832,9 +985,16 @@ export function TradeLogger() {
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <div className="text-sm font-medium text-ink">Quick Review</div>
-                      <div className="mt-1 text-xs text-muted">{currentReviewTrade.broker_symbol ?? currentReviewTrade.instrument} · {currentReviewTrade.date}</div>
+                      <div className="mt-1 text-xs text-muted">{currentReviewTrade.broker_symbol ?? currentReviewTrade.instrument} | {currentReviewTrade.date}</div>
                     </div>
-                    <div className="text-xs text-muted">Save & Next marks only this trade as Reviewed.</div>
+                    <div className="flex flex-wrap gap-2">
+                      {reviewCompleteness ? <StatusBadge tone={reviewCompleteness.tone}>{reviewCompleteness.label}</StatusBadge> : null}
+                      {reviewEligibility ? (
+                        <StatusBadge tone={reviewEligibility.eligible ? "positive" : "caution"}>
+                          {reviewEligibility.eligible ? "Edge Lab Eligible" : "Not Edge Lab Eligible"}
+                        </StatusBadge>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="grid gap-3 md:grid-cols-5">
                     <ImportMetric label="Symbol" value={currentReviewTrade.broker_symbol ?? currentReviewTrade.instrument} />
@@ -865,6 +1025,37 @@ export function TradeLogger() {
                     />
                   </div>
 
+                  <div className="grid gap-3 rounded-lg border border-stroke bg-canvas p-3 md:grid-cols-2">
+                    <div>
+                      <div className="text-xs font-medium uppercase text-muted">Missing Fields Checklist</div>
+                      <div className="mt-2 grid gap-1">
+                        {importedTradeMissingFields(reviewPreview ?? currentReviewTrade).map((field) => (
+                          <div key={field} className="flex items-center gap-2 text-sm text-caution">
+                            <X className="h-4 w-4" />
+                            {field}
+                          </div>
+                        ))}
+                        {!importedTradeMissingFields(reviewPreview ?? currentReviewTrade).length ? (
+                          <div className="flex items-center gap-2 text-sm text-positive">
+                            <Check className="h-4 w-4" />
+                            All completeness fields are filled
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium uppercase text-muted">Edge Lab Eligibility</div>
+                      <div className="mt-2 text-sm text-muted">
+                        {reviewEligibility?.eligible
+                          ? "Ready: Taken trade with R, setup type, session, and manual quality."
+                          : `Still needed: ${reviewEligibility?.missing.join(", ") || "required fields"}.`}
+                      </div>
+                      {reviewResultR === null ? (
+                        <div className="mt-2 text-xs text-caution">{missingRReason(reviewPreview ?? currentReviewTrade)}</div>
+                      ) : null}
+                    </div>
+                  </div>
+
                   <div className="grid gap-3 md:grid-cols-5">
                     <Field label="Regime Label">
                       <Select value={reviewDraft.regime_label ?? ""} options={["", ...REGIME_LABELS]} onChange={(event) => setReviewField("regime_label", event.target.value || null)} />
@@ -890,11 +1081,28 @@ export function TradeLogger() {
                     <Textarea value={reviewDraft.notes ?? ""} onChange={(event) => setReviewField("notes", event.target.value)} placeholder="Add setup notes, execution context, or lesson learned." />
                   </Field>
 
-                  <div className="flex flex-wrap justify-between gap-2">
-                    <Button type="button" variant="ghost" onClick={() => setReviewTradeId(nextReviewTrade?.id ?? null)} disabled={!nextReviewTrade}>
-                      Skip For Now
-                    </Button>
-                    <Button type="button" variant="primary" onClick={saveReviewAndNext} disabled={busy}>
+                  <div className="grid gap-3 rounded-lg border border-stroke bg-canvas p-3 sm:grid-cols-[1fr_auto]">
+                    <Field label="Skip Review Reason" helper="The reason is saved to Review Notes. The trade remains Unreviewed.">
+                      <Input
+                        value={reviewSkipReason}
+                        onChange={(event) => setReviewSkipReason(event.target.value)}
+                        placeholder="Why are you deferring this review?"
+                      />
+                    </Field>
+                    <div className="flex items-end">
+                      <Button type="button" variant="ghost" onClick={skipReviewWithReason} disabled={busy}>
+                        Skip With Reason
+                      </Button>
+                    </div>
+                  </div>
+                  {currentReviewTrade.review_notes ? (
+                    <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-xs leading-5 text-muted">
+                      <span className="font-medium text-ink">Previous review notes:</span> {currentReviewTrade.review_notes}
+                    </div>
+                  ) : null}
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button type="button" variant="primary" onClick={saveReviewAndNext} disabled={busy || !reviewEligibility?.eligible}>
                       <Save className="h-4 w-4" />
                       Save & Next
                     </Button>

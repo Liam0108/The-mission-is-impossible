@@ -18,9 +18,7 @@ REQUIRED_TAKEN_FIELDS: tuple[tuple[str, str], ...] = (
 )
 REQUIRED_IMPORTED_REVIEW_FIELDS: tuple[tuple[str, str], ...] = (
     ("setup_type", "setup_type"),
-    ("regime_label", "regime_label"),
     ("manual_quality", "manual_quality"),
-    ("notes", "notes"),
 )
 DECISIVE_RESULTS = {"TP1", "BE", "SL"}
 

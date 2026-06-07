@@ -112,7 +112,20 @@ account,symbol,direction,quantity,entry_time,exit_time,entry_price,exit_price,gr
 SIM101,NQM6,Long,1,2026-06-03T09:35:00,2026-06-03T09:50:00,19000.00,19025.00,500.00,4.50,495.50,TV-123,18975.00
 ```
 
-Aliases such as `instrument`, `qty`, `side`, `entry price`, `exit price`, `gross p/l`, `net p/l`, and `order id` are also detected. Imported trades are marked with `imported = true` and `review_status = unreviewed`, then appear in the Trade Logger review workflow where setup type, session, regime, manual quality, mistake tag, notes, stop loss, and optional screenshot can be added.
+Aliases such as `instrument`, `qty`, `side`, `entry price`, `exit price`, `gross p/l`, `net p/l`, and `order id` are also detected. Imported trades are marked with `imported = true` and `review_status = unreviewed`, then appear in the Trade Logger review workflow.
+
+The imported-trade review workflow provides:
+
+- A completeness summary for stop loss, setup type, session, regime, manual quality, notes, and Result R.
+- An R completion rate with visible reasons when R is unavailable.
+- A priority queue that handles missing stop loss, setup type, session, and manual quality before sorting by absolute PnL and newest entry.
+- Per-trade completeness and Edge Lab eligibility indicators.
+- Batch fill for session, setup type, regime, manual quality, and location.
+- Optional batch stop loss only when the user explicitly enters a value; R is recalculated separately for each selected trade.
+- Save & Next only after the Edge Lab eligibility fields are complete.
+- Skip With Reason, which stores the reason in review notes while leaving the trade unreviewed.
+
+Imported Result R remains `null` and displays as `--` until entry price, exit price, and a valid stop loss are available. A reviewed imported trade is ready for Edge Lab when it is a Taken trade with `result_r`, `setup_type`, `session`, and `manual_quality`. Regime and notes remain visible completeness fields for better research segmentation but are not hard Edge Lab eligibility gates.
 
 ## Market Data Engine v1
 
