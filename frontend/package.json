@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:broker-import": "node --no-warnings --experimental-strip-types --test tests/broker-import.test.mjs"
+    "test": "npm run test:broker-import",
+    "test:broker-import": "node --no-warnings --experimental-strip-types --test tests/broker-import.test.mjs tests/import-review.test.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

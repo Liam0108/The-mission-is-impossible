@@ -470,9 +470,7 @@ function missingRequiredFields(trade: Partial<TradePayload>) {
     ? [
       ...REQUIRED_TAKEN_FIELDS,
       ["setup_type", "setup_type"],
-      ["regime_label", "regime_label"],
-      ["manual_quality", "manual_quality"],
-      ["notes", "notes"]
+      ["manual_quality", "manual_quality"]
     ] as Array<[keyof TradePayload, string]>
     : REQUIRED_TAKEN_FIELDS;
   return required.filter(([field]) => {

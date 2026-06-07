@@ -83,12 +83,24 @@ See [PROJECT_GOAL.md](PROJECT_GOAL.md) for the product charter and
 ### Imported Trade Review
 
 - Imported records are marked imported, unreviewed, taken, and incomplete.
-- The review queue shows only imported unreviewed records.
+- The completeness summary counts imported review status, missing research
+  fields, calculated R values, and R completion rate.
+- The review queue shows only imported unreviewed records and prioritizes
+  missing stop loss, setup type, session, and manual quality before absolute
+  PnL and recency.
 - Quick-edit fields include setup type, session, regime, manual quality, stop
   loss, location, and notes.
-- Batch apply supports session, setup type, and manual quality.
-- Save & Next advances through the queue.
+- Batch apply supports session, setup type, regime, manual quality, location,
+  and an explicitly entered stop loss.
+- Each trade shows a completeness badge, missing-fields checklist, and Edge Lab
+  eligibility.
+- Save & Next marks a trade reviewed only after the Edge Lab eligibility fields
+  are complete.
+- Skip With Reason stores a review note, leaves the trade unreviewed, and
+  advances the queue.
 - Result R is recalculated only after a valid stop loss is supplied.
+- Edge Lab eligibility for imported records requires Taken, a valid `result_r`,
+  `setup_type`, `session`, and `manual_quality`.
 
 ### Trading Data Rules
 
