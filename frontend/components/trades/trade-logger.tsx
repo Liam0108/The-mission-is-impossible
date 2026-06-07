@@ -145,6 +145,10 @@ function baseTrade(): TradePayload {
     data_quality: "incomplete",
     account: null,
     broker_symbol: null,
+    buy_price: null,
+    sell_price: null,
+    bought_time: null,
+    sold_time: null,
     quantity: null,
     entry_time: null,
     exit_time: null,
@@ -155,6 +159,7 @@ function baseTrade(): TradePayload {
     broker_trade_id: null,
     import_source: null,
     holding_time_minutes: null,
+    holding_time_text: null,
     imported: false,
     review_status: "reviewed"
   };
@@ -210,11 +215,15 @@ function resultRFor(result: string, rr: number | null) {
 }
 
 function resultRFromImportedTrade(trade: Trade, stopLoss: number | null | undefined) {
-  if (trade.entry_price === null || trade.exit_price === null || stopLoss === null || stopLoss === undefined) return trade.result_r;
+  if (trade.entry_price === null || trade.exit_price === null || stopLoss === null || stopLoss === undefined) return null;
   const risk = Math.abs(trade.entry_price - stopLoss);
-  if (!risk) return trade.result_r;
+  if (!risk) return null;
   const reward = trade.direction === "Long" ? trade.exit_price - trade.entry_price : trade.entry_price - trade.exit_price;
   return Number((reward / risk).toFixed(2));
+}
+
+function formatNullableR(value: number | null | undefined, fallback: string) {
+  return value === null || value === undefined || !Number.isFinite(value) ? fallback : formatR(value);
 }
 
 function screenshotHref(path: string) {
@@ -236,6 +245,13 @@ export function TradeLogger() {
   const [reviewTradeId, setReviewTradeId] = useState<string | null>(null);
   const [reviewDraft, setReviewDraft] = useState<Partial<TradePayload>>({});
   const [reviewScreenshot, setReviewScreenshot] = useState<File | null>(null);
+  const [selectedReviewIds, setSelectedReviewIds] = useState<string[]>([]);
+  const [reviewStatusMessage, setReviewStatusMessage] = useState("");
+  const [batchReviewDraft, setBatchReviewDraft] = useState<{
+    session: string;
+    setup_type: string;
+    manual_quality: string;
+  }>({ session: "", setup_type: "", manual_quality: "" });
   const csvInput = useRef<HTMLInputElement | null>(null);
   const brokerCsvInput = useRef<HTMLInputElement | null>(null);
   const screenshotInput = useRef<HTMLInputElement | null>(null);
@@ -248,6 +264,16 @@ export function TradeLogger() {
     () => unreviewedTrades.find((trade) => trade.id === reviewTradeId) ?? unreviewedTrades[0] ?? null,
     [reviewTradeId, unreviewedTrades]
   );
+  const nextReviewTrade = useMemo(() => {
+    if (!currentReviewTrade || unreviewedTrades.length <= 1) return null;
+    const currentIndex = unreviewedTrades.findIndex((trade) => trade.id === currentReviewTrade.id);
+    return unreviewedTrades[(currentIndex + 1) % unreviewedTrades.length];
+  }, [currentReviewTrade, unreviewedTrades]);
+  const reviewResultR = useMemo(() => {
+    if (!currentReviewTrade) return null;
+    const stopLoss = reviewDraft.stop_loss === undefined ? currentReviewTrade.stop_loss : reviewDraft.stop_loss;
+    return resultRFromImportedTrade(currentReviewTrade, stopLoss);
+  }, [currentReviewTrade, reviewDraft.stop_loss]);
   const distances = useMemo(() => calculateDistances(form), [form]);
   const copy = tradeCopy(language);
   const englishCopy = tradeCopy("en");
@@ -302,17 +328,25 @@ export function TradeLogger() {
       manual_quality: currentReviewTrade.manual_quality,
       mistake_type: currentReviewTrade.mistake_type,
       stop_loss: currentReviewTrade.stop_loss,
+      location: currentReviewTrade.location,
       notes: currentReviewTrade.notes ?? ""
     });
     setReviewScreenshot(null);
   }, [currentReviewTrade]);
 
   useEffect(() => {
-    const nextResultR = resultRFor(form.result, distances.rr);
+    const unreviewedIds = new Set(unreviewedTrades.map((trade) => trade.id));
+    setSelectedReviewIds((current) => current.filter((id) => unreviewedIds.has(id)));
+  }, [unreviewedTrades]);
+
+  useEffect(() => {
+    const nextResultR = form.imported && form.stop_loss === null
+      ? null
+      : resultRFor(form.result, distances.rr);
     if (form.result_r !== nextResultR && ["TP1", "BE", "SL", "NoTrade", "Unknown"].includes(form.result)) {
       setForm((current) => ({ ...current, result_r: nextResultR }));
     }
-  }, [distances.rr, form.result, form.result_r]);
+  }, [distances.rr, form.imported, form.result, form.result_r, form.stop_loss]);
 
   function setField<K extends keyof TradePayload>(key: K, value: TradePayload[K]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -443,6 +477,41 @@ export function TradeLogger() {
     setReviewDraft((current) => ({ ...current, [key]: value }));
   }
 
+  function toggleReviewSelection(id: string) {
+    setSelectedReviewIds((current) => (
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+    ));
+  }
+
+  async function applyBatchReviewFields() {
+    if (!selectedReviewIds.length) return;
+    const payload: Partial<TradePayload> = {};
+    if (batchReviewDraft.session) payload.session = batchReviewDraft.session;
+    if (batchReviewDraft.setup_type) payload.setup_type = batchReviewDraft.setup_type;
+    if (batchReviewDraft.manual_quality) payload.manual_quality = batchReviewDraft.manual_quality;
+    if (!Object.keys(payload).length) {
+      setError("Choose at least one batch field before applying.");
+      return;
+    }
+
+    setBusy(true);
+    let updated = 0;
+    try {
+      for (const tradeId of selectedReviewIds) {
+        await api.updateTrade(tradeId, payload);
+        updated += 1;
+      }
+      setError(null);
+      setSelectedReviewIds([]);
+      await loadTrades();
+      setReviewStatusMessage(`Batch updated ${updated} imported trades. They remain Unreviewed until saved individually.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to batch update imported trades");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveReviewAndNext() {
     if (!currentReviewTrade) return;
     setBusy(true);
@@ -460,6 +529,7 @@ export function TradeLogger() {
       setReviewTradeId(null);
       setReviewScreenshot(null);
       await loadTrades();
+      setReviewStatusMessage("Trade reviewed. The next Unreviewed trade is ready.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save imported trade review");
     } finally {
@@ -579,20 +649,29 @@ export function TradeLogger() {
                   <div className="grid gap-2 text-sm text-muted">
                     <div>Missing required columns: {brokerPreview.missingColumns.length ? brokerPreview.missingColumns.join(", ") : "None"}</div>
                     <div>Missing fields: {brokerPreview.summary.missingFieldCounts.map((item) => `${item.field}: ${item.count}`).join(", ") || "None"}</div>
+                    <div>Rows with warnings: {brokerPreview.candidates.filter((candidate) => candidate.warnings.length).length}</div>
                   </div>
                 </div>
               </div>
               <div className="overflow-x-auto rounded-lg border border-stroke">
-                <table className="w-full min-w-[900px] text-left text-sm">
+                <table className="w-full min-w-[1780px] text-left text-sm">
                   <thead className="bg-canvas text-xs uppercase text-muted">
                     <tr>
                       <th className="px-3 py-2 font-medium">Row</th>
                       <th className="px-3 py-2 font-medium">Account</th>
-                      <th className="px-3 py-2 font-medium">Symbol</th>
+                      <th className="px-3 py-2 font-medium">Broker Symbol</th>
+                      <th className="px-3 py-2 font-medium">Normalized</th>
+                      <th className="px-3 py-2 font-medium">Transaction Order</th>
                       <th className="px-3 py-2 font-medium">Direction</th>
                       <th className="px-3 py-2 font-medium">Entry</th>
                       <th className="px-3 py-2 font-medium">Exit</th>
+                      <th className="px-3 py-2 font-medium">Entry Time</th>
+                      <th className="px-3 py-2 font-medium">Exit Time</th>
                       <th className="px-3 py-2 text-right font-medium">Net PnL</th>
+                      <th className="px-3 py-2 font-medium">PnL Validation</th>
+                      <th className="px-3 py-2 font-medium">Result</th>
+                      <th className="px-3 py-2 font-medium">R</th>
+                      <th className="px-3 py-2 font-medium">Warning</th>
                       <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
                   </thead>
@@ -602,10 +681,23 @@ export function TradeLogger() {
                         <td className="px-3 py-2 text-muted">{candidate.rowNumber}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.account ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.broker_symbol ?? candidate.payload.instrument}</td>
-                        <td className="px-3 py-2 text-muted">{candidate.payload.direction}</td>
+                        <td className="px-3 py-2 font-medium text-ink">{candidate.payload.instrument}</td>
+                        <td className="px-3 py-2 text-muted">{candidate.transactionOrder}</td>
+                        <td className="px-3 py-2 text-muted">
+                          <div className="font-medium text-ink">{candidate.inferredDirection ?? copy.notAvailable}</div>
+                          <div className="mt-1 max-w-48 text-xs">{candidate.directionInference}</div>
+                        </td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.entry_price ?? copy.notAvailable}</td>
                         <td className="px-3 py-2 text-muted">{candidate.payload.exit_price ?? copy.notAvailable}</td>
+                        <td className="px-3 py-2 text-muted">{candidate.payload.entry_time ? new Date(candidate.payload.entry_time).toLocaleString() : copy.notAvailable}</td>
+                        <td className="px-3 py-2 text-muted">{candidate.payload.exit_time ? new Date(candidate.payload.exit_time).toLocaleString() : copy.notAvailable}</td>
                         <td className="px-3 py-2 text-right text-muted">{candidate.payload.net_pnl ?? copy.notAvailable}</td>
+                        <td className="px-3 py-2 text-muted" title={candidate.pnlValidationDetail}>{candidate.pnlValidation}</td>
+                        <td className="px-3 py-2 font-medium text-ink">{candidate.payload.result}</td>
+                        <td className="px-3 py-2 text-muted">{formatNullableR(candidate.payload.result_r, copy.notAvailable)}</td>
+                        <td className="max-w-64 px-3 py-2 text-muted">
+                          {candidate.warnings.length ? candidate.warnings.join(" ") : copy.notAvailable}
+                        </td>
                         <td className="px-3 py-2 text-muted">
                           {candidate.duplicate ? candidate.duplicateReason : candidate.errors.length ? candidate.errors.join(", ") : "Ready"}
                         </td>
@@ -626,77 +718,198 @@ export function TradeLogger() {
         </CardContent>
       </Card>
 
-      {currentReviewTrade ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Unreviewed Imported Trade</CardTitle>
-            <div className="text-sm text-muted">{unreviewedTrades.length} waiting for review</div>
-          </CardHeader>
-          <CardContent className="grid gap-5">
-            <input ref={reviewScreenshotInput} type="file" accept="image/*" className="hidden" onChange={(event) => setReviewScreenshot(event.target.files?.[0] ?? null)} />
-            <div className="grid gap-3 md:grid-cols-5">
-              <ImportMetric label="Symbol" value={currentReviewTrade.broker_symbol ?? currentReviewTrade.instrument} />
-              <ImportMetric label="Direction" value={currentReviewTrade.direction} />
-              <ImportMetric label="Net PnL" value={currentReviewTrade.net_pnl ?? copy.notAvailable} />
-              <ImportMetric label="Holding Time" value={currentReviewTrade.holding_time_minutes === null ? copy.notAvailable : `${currentReviewTrade.holding_time_minutes} min`} />
-              <ImportMetric label="Result R" value={formatR(Number(currentReviewTrade.result_r))} />
-            </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Review Imported Trades</CardTitle>
+          <div className="text-sm text-muted">{unreviewedTrades.length} Unreviewed</div>
+        </CardHeader>
+        <CardContent className="grid min-w-0 gap-5">
+          {reviewStatusMessage ? (
+            <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm text-muted">{reviewStatusMessage}</div>
+          ) : null}
 
-            <div className="grid gap-4">
-              <QuickButtonRow
-                label="Setup Type"
-                value={reviewDraft.setup_type ?? ""}
-                options={SETUP_TYPES.filter(Boolean)}
-                onChange={(value) => setReviewField("setup_type", value)}
-              />
-              <QuickButtonRow
-                label="Session"
-                value={reviewDraft.session ?? currentReviewTrade.session}
-                options={["NY_AM", "NY_PM", "London", "Asian"]}
-                onChange={(value) => setReviewField("session", value)}
-              />
-              <QuickButtonRow
-                label="Manual Quality"
-                value={reviewDraft.manual_quality ?? ""}
-                options={MANUAL_QUALITIES.filter(Boolean)}
-                onChange={(value) => setReviewField("manual_quality", value)}
-              />
-            </div>
+          {unreviewedTrades.length ? (
+            <>
+              <div className="grid min-w-0 gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-ink">Unreviewed Queue</div>
+                    <div className="mt-1 text-xs text-muted">Only imported trades with review_status = Unreviewed appear here.</div>
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
+                    <input
+                      type="checkbox"
+                      checked={selectedReviewIds.length === unreviewedTrades.length}
+                      onChange={(event) => setSelectedReviewIds(event.target.checked ? unreviewedTrades.map((trade) => trade.id) : [])}
+                    />
+                    Select all
+                  </label>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-stroke">
+                  <table className="w-full min-w-[820px] text-left text-sm">
+                    <thead className="bg-canvas text-xs uppercase text-muted">
+                      <tr>
+                        <th className="w-12 px-3 py-2 font-medium">Select</th>
+                        <th className="px-3 py-2 font-medium">Date</th>
+                        <th className="px-3 py-2 font-medium">Symbol</th>
+                        <th className="px-3 py-2 font-medium">Direction</th>
+                        <th className="px-3 py-2 text-right font-medium">PnL</th>
+                        <th className="px-3 py-2 font-medium">Session</th>
+                        <th className="px-3 py-2 font-medium">Setup Type</th>
+                        <th className="px-3 py-2 text-right font-medium">R</th>
+                        <th className="px-3 py-2 text-right font-medium">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {unreviewedTrades.map((trade) => (
+                        <tr key={trade.id} className={cn("border-t border-stroke", currentReviewTrade?.id === trade.id && "bg-accent/5")}>
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${trade.broker_symbol ?? trade.instrument} ${trade.entry_time ?? trade.date}`}
+                              checked={selectedReviewIds.includes(trade.id)}
+                              onChange={() => toggleReviewSelection(trade.id)}
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-muted">{trade.date}</td>
+                          <td className="px-3 py-2 font-medium text-ink">{trade.broker_symbol ?? trade.instrument}</td>
+                          <td className="px-3 py-2 text-muted">{trade.direction}</td>
+                          <td className="px-3 py-2 text-right text-muted">{trade.net_pnl ?? copy.notAvailable}</td>
+                          <td className="px-3 py-2 text-muted">{trade.session}</td>
+                          <td className="px-3 py-2 text-muted">{trade.setup_type ?? copy.notAvailable}</td>
+                          <td className="px-3 py-2 text-right text-muted">{formatNullableR(trade.result_r, copy.notAvailable)}</td>
+                          <td className="px-3 py-2 text-right">
+                            <Button type="button" variant="ghost" size="sm" onClick={() => setReviewTradeId(trade.id)}>Review</Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
-            <div className="grid gap-3 md:grid-cols-4">
-              <Field label="Regime Label">
-                <Select value={reviewDraft.regime_label ?? ""} options={["", ...REGIME_LABELS]} onChange={(event) => setReviewField("regime_label", event.target.value || null)} />
-              </Field>
-              <Field label="Stop Loss">
-                <Input type="number" step="0.25" value={reviewDraft.stop_loss ?? ""} onChange={(event) => setReviewField("stop_loss", numberOrNull(event.target.value))} />
-              </Field>
-              <Field label="Mistake Tag">
-                <Select value={reviewDraft.mistake_type ?? "None"} options={MISTAKE_TYPES} onChange={(event) => setReviewField("mistake_type", event.target.value)} />
-              </Field>
-              <Field label="Screenshot">
-                <Button type="button" variant="secondary" onClick={() => reviewScreenshotInput.current?.click()}>
-                  <ImageUp className="h-4 w-4" />
-                  {reviewScreenshot ? reviewScreenshot.name : "Attach Optional"}
-                </Button>
-              </Field>
-            </div>
+              <div className="rounded-lg border border-stroke bg-canvas p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-ink">Batch Apply</div>
+                    <div className="mt-1 text-xs text-muted">Apply labels to selected trades without marking them Reviewed.</div>
+                  </div>
+                  <div className="text-xs text-muted">{selectedReviewIds.length} selected</div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <Field label="Session">
+                    <Select
+                      value={batchReviewDraft.session}
+                      options={["", ...SESSIONS]}
+                      onChange={(event) => setBatchReviewDraft((current) => ({ ...current, session: event.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Setup Type">
+                    <Select
+                      value={batchReviewDraft.setup_type}
+                      options={SETUP_TYPES}
+                      onChange={(event) => setBatchReviewDraft((current) => ({ ...current, setup_type: event.target.value }))}
+                    />
+                  </Field>
+                  <Field label="Manual Quality">
+                    <Select
+                      value={batchReviewDraft.manual_quality}
+                      options={MANUAL_QUALITIES}
+                      onChange={(event) => setBatchReviewDraft((current) => ({ ...current, manual_quality: event.target.value }))}
+                    />
+                  </Field>
+                  <div className="flex items-end">
+                    <Button type="button" variant="secondary" className="w-full" onClick={applyBatchReviewFields} disabled={busy || !selectedReviewIds.length}>
+                      Apply To Selected
+                    </Button>
+                  </div>
+                </div>
+              </div>
 
-            <Field label="Notes">
-              <Textarea value={reviewDraft.notes ?? ""} onChange={(event) => setReviewField("notes", event.target.value)} placeholder="Add setup notes, execution context, or lesson learned." />
-            </Field>
+              {currentReviewTrade ? (
+                <div className="grid gap-5 rounded-lg border border-stroke p-4">
+                  <input ref={reviewScreenshotInput} type="file" accept="image/*" className="hidden" onChange={(event) => setReviewScreenshot(event.target.files?.[0] ?? null)} />
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-medium text-ink">Quick Review</div>
+                      <div className="mt-1 text-xs text-muted">{currentReviewTrade.broker_symbol ?? currentReviewTrade.instrument} · {currentReviewTrade.date}</div>
+                    </div>
+                    <div className="text-xs text-muted">Save & Next marks only this trade as Reviewed.</div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-5">
+                    <ImportMetric label="Symbol" value={currentReviewTrade.broker_symbol ?? currentReviewTrade.instrument} />
+                    <ImportMetric label="Direction" value={currentReviewTrade.direction} />
+                    <ImportMetric label="Net PnL" value={currentReviewTrade.net_pnl ?? copy.notAvailable} />
+                    <ImportMetric label="Holding Time" value={currentReviewTrade.holding_time_minutes === null ? copy.notAvailable : `${currentReviewTrade.holding_time_minutes} min`} />
+                    <ImportMetric label="Result R" value={formatNullableR(reviewResultR, copy.notAvailable)} />
+                  </div>
 
-            <div className="flex flex-wrap justify-between gap-2">
-              <Button type="button" variant="ghost" onClick={() => setReviewTradeId(unreviewedTrades[1]?.id ?? null)} disabled={unreviewedTrades.length <= 1}>
-                Skip For Now
-              </Button>
-              <Button type="button" variant="primary" onClick={saveReviewAndNext} disabled={busy}>
-                <Save className="h-4 w-4" />
-                Save & Next
-              </Button>
+                  <div className="grid gap-4">
+                    <QuickButtonRow
+                      label="Setup Type"
+                      value={reviewDraft.setup_type ?? ""}
+                      options={SETUP_TYPES.filter(Boolean)}
+                      onChange={(value) => setReviewField("setup_type", value)}
+                    />
+                    <QuickButtonRow
+                      label="Session"
+                      value={reviewDraft.session ?? currentReviewTrade.session}
+                      options={SESSIONS}
+                      onChange={(value) => setReviewField("session", value)}
+                    />
+                    <QuickButtonRow
+                      label="Manual Quality"
+                      value={reviewDraft.manual_quality ?? ""}
+                      options={MANUAL_QUALITIES.filter(Boolean)}
+                      onChange={(value) => setReviewField("manual_quality", value)}
+                    />
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-5">
+                    <Field label="Regime Label">
+                      <Select value={reviewDraft.regime_label ?? ""} options={["", ...REGIME_LABELS]} onChange={(event) => setReviewField("regime_label", event.target.value || null)} />
+                    </Field>
+                    <Field label="Stop Loss">
+                      <Input type="number" step="0.25" value={reviewDraft.stop_loss ?? ""} onChange={(event) => setReviewField("stop_loss", numberOrNull(event.target.value))} />
+                    </Field>
+                    <Field label="Location">
+                      <Select value={reviewDraft.location ?? currentReviewTrade.location} options={LOCATIONS} onChange={(event) => setReviewField("location", event.target.value)} />
+                    </Field>
+                    <Field label="Mistake Tag">
+                      <Select value={reviewDraft.mistake_type ?? "None"} options={MISTAKE_TYPES} onChange={(event) => setReviewField("mistake_type", event.target.value)} />
+                    </Field>
+                    <Field label="Screenshot">
+                      <Button type="button" variant="secondary" onClick={() => reviewScreenshotInput.current?.click()}>
+                        <ImageUp className="h-4 w-4" />
+                        {reviewScreenshot ? reviewScreenshot.name : "Attach Optional"}
+                      </Button>
+                    </Field>
+                  </div>
+
+                  <Field label="Notes">
+                    <Textarea value={reviewDraft.notes ?? ""} onChange={(event) => setReviewField("notes", event.target.value)} placeholder="Add setup notes, execution context, or lesson learned." />
+                  </Field>
+
+                  <div className="flex flex-wrap justify-between gap-2">
+                    <Button type="button" variant="ghost" onClick={() => setReviewTradeId(nextReviewTrade?.id ?? null)} disabled={!nextReviewTrade}>
+                      Skip For Now
+                    </Button>
+                    <Button type="button" variant="primary" onClick={saveReviewAndNext} disabled={busy}>
+                      <Save className="h-4 w-4" />
+                      Save & Next
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="rounded-lg border border-dashed border-stroke bg-canvas px-4 py-8 text-center">
+              <div className="text-sm font-medium text-ink">No imported trades waiting for review</div>
+              <div className="mt-2 text-sm text-muted">Upload a broker CSV to add completed trades to this queue.</div>
             </div>
-          </CardContent>
-        </Card>
-      ) : null}
+          )}
+        </CardContent>
+      </Card>
 
       <form onSubmit={saveTrade} className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
         {quickDuplicateMode ? (
@@ -903,7 +1116,7 @@ export function TradeLogger() {
                 <Select tabIndex={13} value={form.result} options={RESULTS} getOptionLabel={selectLabel} onChange={(event) => setField("result", event.target.value)} />
               </Field>
               <Field label={label("resultR")} helper={helper("resultR")}>
-                <Input type="number" step="0.01" value={form.result_r} onChange={(event) => setField("result_r", Number(event.target.value))} />
+                <Input type="number" step="0.01" value={form.result_r ?? ""} onChange={(event) => setField("result_r", numberOrNull(event.target.value))} />
               </Field>
               <Field label={label("mfe")} helper={helper("mfe")}>
                 <Input type="number" step="0.01" value={form.mfe} onChange={(event) => setField("mfe", Number(event.target.value))} />
@@ -1011,7 +1224,7 @@ export function TradeLogger() {
                         copy.notAvailable
                       )}
                     </td>
-                    <td className="py-3 text-right font-medium text-ink">{formatR(Number(trade.result_r))}</td>
+                    <td className="py-3 text-right font-medium text-ink">{formatNullableR(trade.result_r, copy.notAvailable)}</td>
                     <td className="py-3">
                       <div className="flex justify-end gap-2">
                         <Button type="button" variant="ghost" size="icon" aria-label={copy.editSetup} onClick={() => { setEditingId(trade.id); setQuickDuplicateMode(false); setPendingScreenshot(null); setForm(toPayload(trade)); }}>

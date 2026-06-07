@@ -65,7 +65,7 @@ class TradeBase(BaseModel):
     tp2_price: Decimal | None = Field(default=None, ge=0)
     risk_amount: Decimal | None = Field(default=None, ge=0)
     result: Result = Result.no_trade
-    result_r: Decimal = Decimal("0")
+    result_r: Decimal | None = Decimal("0")
     mfe: Decimal = Decimal("0")
     mae: Decimal = Decimal("0")
     distance_to_poc: Decimal | None = Field(default=None, ge=0)
@@ -96,6 +96,10 @@ class TradeBase(BaseModel):
     data_quality: DataQuality = DataQuality.incomplete
     account: str | None = Field(default=None, max_length=64)
     broker_symbol: str | None = Field(default=None, max_length=32)
+    buy_price: Decimal | None = Field(default=None, ge=0)
+    sell_price: Decimal | None = Field(default=None, ge=0)
+    bought_time: datetime | None = None
+    sold_time: datetime | None = None
     quantity: Decimal | None = Field(default=None, ge=0)
     entry_time: datetime | None = None
     exit_time: datetime | None = None
@@ -106,6 +110,7 @@ class TradeBase(BaseModel):
     broker_trade_id: str | None = Field(default=None, max_length=64)
     import_source: str | None = Field(default=None, max_length=32)
     holding_time_minutes: Decimal | None = Field(default=None, ge=0)
+    holding_time_text: str | None = Field(default=None, max_length=64)
     imported: bool = False
     review_status: ReviewStatus = ReviewStatus.reviewed
 
@@ -174,6 +179,10 @@ class TradeUpdate(BaseModel):
     data_quality: DataQuality | None = None
     account: str | None = Field(default=None, max_length=64)
     broker_symbol: str | None = Field(default=None, max_length=32)
+    buy_price: Decimal | None = Field(default=None, ge=0)
+    sell_price: Decimal | None = Field(default=None, ge=0)
+    bought_time: datetime | None = None
+    sold_time: datetime | None = None
     quantity: Decimal | None = Field(default=None, ge=0)
     entry_time: datetime | None = None
     exit_time: datetime | None = None
@@ -184,6 +193,7 @@ class TradeUpdate(BaseModel):
     broker_trade_id: str | None = Field(default=None, max_length=64)
     import_source: str | None = Field(default=None, max_length=32)
     holding_time_minutes: Decimal | None = Field(default=None, ge=0)
+    holding_time_text: str | None = Field(default=None, max_length=64)
     imported: bool | None = None
     review_status: ReviewStatus | None = None
 
