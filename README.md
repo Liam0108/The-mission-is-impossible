@@ -36,8 +36,10 @@ fabio-edge-research-lab/
     app/                 Next.js App Router pages
     components/          App shell, charts, forms, UI primitives
     lib/                 API client, constants, utilities
-  docs/
-    roadmap.md           Development roadmap and future architecture
+  PROJECT_GOAL.md        Product mission and permanent boundaries
+  PROJECT_STATE.md       Current stable modules and limitations
+  RESEARCH_ROADMAP.md    Data-gated research milestones
+  DATA_POLICY.md         Data source, quality, and audit rules
 ```
 
 ## Stack
@@ -490,6 +492,10 @@ The project uses a feature-branch and pull-request workflow. Keep `main` stable 
 
 Read:
 
+- [PROJECT_GOAL.md](PROJECT_GOAL.md)
+- [PROJECT_STATE.md](PROJECT_STATE.md)
+- [RESEARCH_ROADMAP.md](RESEARCH_ROADMAP.md)
+- [DATA_POLICY.md](DATA_POLICY.md)
 - [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [Private GitHub setup](docs/GITHUB_SETUP.md)

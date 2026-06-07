@@ -1,113 +1,175 @@
-# Liam Trading Brain Project State
+# Fabio Edge Research Lab Project State
 
-Last updated: 2026-06-05
+Last updated: 2026-06-07
 
-## Product Purpose
+## Product Identity
 
-Liam Trading Brain, also known in the codebase as Fabio Edge Research Lab, is a local-first discretionary trading research and decision-support platform plus a research-only Investment Lab.
+Fabio Edge Research Lab is a local-first, research-first decision-support
+platform for discretionary trading and long-term investment research.
 
-It is not an automated trading system. It does not connect to brokers, place orders, execute trades, or use API keys for live execution. The trader manually labels setups; the software handles logging, statistics, scoring, similarity search, risk research, and market-data detector validation.
+The codebase and older documents may contain the legacy name "Liam Trading
+Brain." Fabio Edge Research Lab is the canonical product name.
 
-## Current Major Capabilities
+The platform measures evidence, exposes assumptions, and supports human
+decisions. It does not connect to brokers, place orders, trade automatically,
+sell signals, or guarantee outcomes.
 
-- Dashboard with trade performance, data quality, skipped/taken counts, POC comparison, mistakes, strategy versions, sessions, and research analytics.
-- Trade Logger with fast setup entry, duplicate-last-trade, templates, screenshot upload, CSV import/export, draft autosave, localStorage fallback, auto RR/result R, auto setup score, optional manual quality, and Chinese UI support.
-- Setup Analyzer with rule-based setup score, similar trade search, TP1/BE/SL probabilities, POC warning, confidence, best management rule, and export support.
-- Management Lab with TP1 management rule comparisons and regime grouping.
-- Risk / Monte Carlo page using valid taken trades only.
-- Screenshot Library with searchable screenshot research assets and validation metadata.
-- Research Lab with review analytics, daily scores, market context, news filter, session refinement, strategy version comparison, and edge discovery.
-- Checklist page for pre-market and post-trade process review.
-- Freedom Dashboard for personal goal tracking connected to trading PnL calculations.
-- Market Lab for importing 1m/5m candle CSV data, including TradingView exports with extra columns, detecting swings, liquidity sweeps, FVGs, setup candidates, and collecting manual validation feedback.
-- Structure Importance calibration view in Market Lab for comparing top/bottom importance swings, filtering by session and HH/HL/LH/LL, validating each swing, and exporting calibration feedback CSV.
-- Investment Lab with local stock universes, FMP free-plan compatible enrichment, scientific scoring, normalized DCF, reverse DCF, Bear/Base/Bull scenarios, probability-weighted scenario decisions, portfolio rules, and bilingual UI.
-- Investment data coverage management with quota reconciliation, custom scan priorities, scan previews, scan ROI tracking, and hybrid completion diagnostics.
-- SEC EDGAR XBRL fallback for annual operating cash flow, CapEx, latest FCF, 3-year average FCF, and 5-year average FCF.
+See [PROJECT_GOAL.md](PROJECT_GOAL.md) for the product charter and
+[DATA_POLICY.md](DATA_POLICY.md) for data eligibility and audit rules.
 
-## Current Stable Investment Lab State
+## Current Modules
 
-- The investment data pipeline combines local S&P 500, Nasdaq 100, and Dow 30 universes with cached/manual data, compatible FMP endpoints, and SEC EDGAR company facts.
-- FMP `cashFlow` is permanently treated as premium blocked for the current plan. Make Valid scans must not request it.
-- SEC EDGAR is the FCF fallback and uses ticker-to-CIK mapping, annual 10-K facts, local cache, a declared User-Agent, and conservative request pacing.
-- Scenario Decision Engine calculates Bear/Base/Bull values, probability-weighted fair value, upside/downside, risk/reward, and scenario decision labels.
-- Scan ROI records batch mode, estimated and actual calls, endpoint outcomes, new valid stocks, and calls per valid stock.
-- Custom priority controls include market cap, data coverage, watchlist, sector preference, missing-field count, quality, valuation, risk, and manual ticker order.
-- Hybrid Make Valid completion prioritizes stocks that already have SEC FCF and need only available FMP profile, historical, income, or ratios data.
-- Current local coverage snapshot: 9 stocks have SEC FCF and 6 stocks have valid scenario data. Local browser data can differ by profile and date.
+### Trading Research
 
-## Recent Changes
+- Dashboard with trade performance, data quality, skipped/taken counts, POC
+  comparisons, mistake analysis, strategy versions, sessions, and research
+  summaries.
+- Trade Logger with fast entry, templates, draft autosave, duplicate-last-trade,
+  screenshots, CSV import/export, auto RR/result R, auto setup score, manual
+  quality, and localStorage fallback.
+- Broker Trade Import for CSV-only historical imports.
+- Review Imported Trades queue for completing imported records.
+- Setup Analyzer with rule-based score, similar trades, historical
+  probabilities, POC warnings, confidence, management-rule output, and export.
+- Edge Lab for expectancy, R distributions, profit factor, break-even rate,
+  drawdown, Monte Carlo, and setup breakdowns.
+- Management Lab for historical TP1 management-rule comparisons.
+- Risk / Monte Carlo tools using eligible taken trades.
+- Screenshot Library and Research Lab for review, mistakes, daily scores,
+  market context, news, sessions, strategy versions, and edge discovery.
+- Pre-market and post-trade checklist.
 
-- Swing Detector V2 added configurable mode, left/right candle count, minimum swing distance, swing score, accepted-swing reasoning, and V1/V2 count comparison.
-- Structure Importance Engine V1 added a 0-100 score for V2 swings using displacement, BOS potential, CHOCH potential, liquidity interaction, session significance, and volume expansion.
-- Trade Logger field clarity upgrade:
-  - Sweep Yes/No is now displayed as Sweep Timeframe: None, 1m, 5m, 15m, PDH/PDL, Session High/Low.
-  - CHOCH Yes/No is now displayed as CHOCH Timeframe: None, 1m, 5m, 15m.
-  - LH/HL is now Entry Pullback Structure: None, HL for Long, LH for Short, Failed HL, Failed LH.
-  - POC Risk is now POC Chop Risk: Low, Medium, High.
-  - Setup Score is read-only and recalculated automatically on save.
-  - Manual Quality added: A+, A, B, C, Skip.
-  - Trade Logger visible labels, helper text, buttons, placeholders, and options support Chinese display.
+### Investment Research
 
-## Data Rules
+- Investment Lab with local stock universes and local-first state.
+- FMP free-plan compatible endpoint detection, quota reconciliation, cache
+  classification, custom scan priorities, previews, and Scan ROI.
+- SEC EDGAR XBRL fallback for operating cash flow, CapEx, latest FCF, and
+  normalized three- and five-year FCF.
+- Hybrid make-valid workflow combining cache, FMP, SEC, and manual inputs.
+- Data-source audit, mapping audit, raw response inspector, and reliability
+  reporting.
+- DCF, normalized FCF DCF, primary DCF mode selection, reverse DCF, sensitivity
+  analysis, Bear/Base/Bull valuation, probability-weighted fair value, and
+  scenario decision labels.
+- Research-only portfolio and diversification tooling.
 
-- Analytics, Monte Carlo, and future ML should use only valid taken trades with `data_quality = good`.
-- `setup_score` is system-calculated. Do not treat it as a manual input.
-- `manual_quality` is optional trader judgment and must not override statistical scoring.
-- New structure fields still use existing database columns for compatibility:
-  - `liquidity_sweep` stores sweep timeframe/level.
-  - `choch` stores CHOCH timeframe.
-  - `lh_hl` stores entry pullback structure.
-- Backend constraints preserve legacy Yes/No values so older records do not break.
+### Other Modules
 
-## Local Development Status
+- Freedom Dashboard for personal goals and trading-result progress.
+- Multi-language UI with English, Chinese, and Japanese support in the current
+  custom i18n architecture.
+- Market Lab under Experimental for market-data import and detector validation.
+  It is not the primary product direction.
 
-- Frontend: Next.js, React, TypeScript, Tailwind, localStorage fallback.
-- Backend: FastAPI, SQLAlchemy, PostgreSQL schema/migrations.
-- Market data analysis exists in both frontend local fallback and backend service.
-- Python 3.12 is the intended backend runtime, but tests have also been run with Python 3.11 using project requirements.
+## Stable Trading Features
 
-## Validation Commands
+### Tradovate Closed Trades CSV
 
-Frontend:
+- Detects Tradovate columns including symbol, quantity, buy/sell price, PnL,
+  bought/sold timestamps, and duration.
+- Preserves the original broker symbol while normalizing contracts such as
+  `MNQM6` to `MNQ`.
+- Infers direction from transaction order:
+  - Buy before sell is Long.
+  - Sell before buy is Short.
+- Uses PnL formulas as a consistency check and exposes mismatches.
+- Parses currency-formatted positive and negative PnL.
+- Maps positive, zero, and negative outcomes without converting broker trades
+  into `NoTrade`.
+- Uses a deterministic duplicate identifier when a broker trade ID is absent.
+- Keeps `result_r` null until stop loss and the other required inputs exist.
+
+### Imported Trade Review
+
+- Imported records are marked imported, unreviewed, taken, and incomplete.
+- The review queue shows only imported unreviewed records.
+- Quick-edit fields include setup type, session, regime, manual quality, stop
+  loss, location, and notes.
+- Batch apply supports session, setup type, and manual quality.
+- Save & Next advances through the queue.
+- Result R is recalculated only after a valid stop loss is supplied.
+
+### Trading Data Rules
+
+- Core analytics and Monte Carlo use only eligible good taken trades.
+- `setup_score` is system-calculated.
+- `manual_quality` is trader judgement and does not replace statistical scoring.
+- Incomplete imports remain stored but are excluded where required.
+- Legacy database values remain supported for backward compatibility.
+
+## Stable Investment Features
+
+- Local S&P 500, Nasdaq 100, and Dow 30 universes do not depend on a premium
+  screener endpoint.
+- The FMP `cashFlow` endpoint is remembered as premium blocked for the current
+  plan and must not be requested repeatedly.
+- Available FMP endpoints, cache data, SEC EDGAR, and manual values can be
+  combined without hiding their source.
+- Empty, failed, stale, valid, and premium-blocked FMP cache states are distinct.
+- SEC EDGAR requests use ticker-to-CIK mapping, annual company facts, cache, a
+  declared User-Agent, and conservative pacing.
+- FCF data records the concepts and annual periods used.
+- Scenario decisions show separate Bear/Base/Bull values, weighted fair value,
+  upside/downside, risk/reward, and missing-data reasons.
+- Scan ROI records calls, endpoint outcomes, data gained, and newly valid stocks.
+- Diagnostic panels expose raw and mapped data without changing scoring logic.
+
+Counts of cached or scenario-valid stocks are browser-profile and date
+dependent. They are runtime observations, not a stable repository capability.
+
+## Architecture
+
+- Frontend: Next.js, React, TypeScript, Tailwind CSS, and localStorage fallback.
+- Backend: FastAPI, SQLAlchemy, and PostgreSQL schema/migrations.
+- Analytics: Python services with Pandas/NumPy-compatible boundaries.
+- ML: architecture placeholders only; no active training.
+- Deployment and validation: local scripts and Docker-compatible configuration.
+
+## Known Limitations
+
+- LocalStorage, API quota state, SEC cache, watchlists, and portfolio data are
+  not shared automatically between browsers or collaborators.
+- FMP coverage depends on subscription capabilities, quota, and endpoint
+  availability.
+- SEC XBRL concepts can be missing or ambiguous for some issuers.
+- Traditional FCF DCF is often unsuitable for banks, insurers, and some other
+  financial firms.
+- Valuation results remain sensitive to growth, discount-rate, terminal-growth,
+  and share-count assumptions.
+- Historical trading conclusions can be unreliable when samples are small or
+  review fields are incomplete.
+- Market Lab detector logic is experimental and duplicated across frontend and
+  backend paths; it must not be changed without an explicit request.
+- i18n is a custom lightweight implementation rather than route-based Next.js
+  localization.
+- Cloud synchronization is reserved architecture only.
+
+## Development Boundaries
+
+- Do not add live broker connections, order placement, or automatic trading.
+- Do not add ML training without an explicit request and clean-data gate.
+- Do not change scoring weights or DCF assumptions unless explicitly requested.
+- Do not touch Market Lab unless explicitly requested.
+- Do not silently alter data eligibility or recommendation confidence rules.
+- Do not commit secrets, API caches, broker exports, or user data.
+
+## Required Validation
+
+Run from the project root before reporting success:
 
 ```powershell
 cd frontend
 npm.cmd run build
 npm.cmd run lint
+cd ..
+backend\.venv\Scripts\python.exe -m pytest
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-secrets.ps1
+git diff --check
 ```
 
-Backend:
+## Next Recommended Milestones
 
-```powershell
-cd backend
-python -m pytest tests
-```
-
-If local Python lacks dependencies, install `backend/requirements.txt` in a virtual environment first.
-
-## Hard Product Boundaries
-
-- Do not add broker execution.
-- Do not add live order placement.
-- Do not add automatic trading.
-- Do not add API-key based broker integrations.
-- Do not add ML training until the valid taken trade threshold is met.
-- Do not rely on screenshots for future market-data detection logic.
-
-## Known Implementation Notes
-
-- The app name is still mixed between Fabio Edge Research Lab and Liam Trading Brain. Code paths mostly use Fabio naming.
-- i18n is lightweight and custom in `frontend/lib/i18n.ts`; it is not using Next.js route-based localization.
-- Local fallback behavior is in `frontend/lib/local-store.ts`.
-- Market Lab detector logic is duplicated in frontend and backend; keep algorithms aligned when changing detector rules.
-- Investment Lab data and API quota state are stored locally in the browser and are not shared automatically between collaborators.
-- FMP cache/API coverage depends on the user's subscription and daily quota. Empty fresh cache entries can temporarily prevent a useful re-fetch.
-- Traditional FCF DCF may not suit banks, insurers, or other financial firms; those records show a sector exception warning.
-- SEC XBRL concepts can be absent or ambiguous for some issuers and require audit before trusting the result.
-- FMP credentials currently entered through the Investment Lab UI are local browser settings. Never commit or share browser storage exports containing them.
-- The Git repository uses `main`, feature branches, pull requests, a local pre-commit secret check, and ignored runtime API caches.
-
-## Development Boundary
-
-Do not modify Market Lab unless the user explicitly requests a Market Lab change. Investment Lab work must not silently alter market detector logic.
+1. Trading data integrity and imported-trade completion.
+2. Consistent trading edge evidence with sample-size and eligibility context.
+3. Investment data coverage and valuation-model validation.
