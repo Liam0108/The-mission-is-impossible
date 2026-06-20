@@ -2029,8 +2029,11 @@ function applySecCashFlow(stock: StockRecord, result: SecCashFlowResult) {
     if (parsed === null) return;
     const current = finiteValue(stock[key]);
     const currentSource = stock.field_audit?.[String(key)]?.source;
-    const preserveExisting =
+    const currentLooksUsable =
       current !== null
+      && (key === "dividend_yield_pct" ? current >= 0 : current > 0);
+    const preserveExisting =
+      currentLooksUsable
       && (currentSource === "manual" || String(currentSource ?? "").startsWith("FMP"));
     if (preserveExisting) return;
     (incoming as Record<string, unknown>)[key] = parsed;
@@ -2053,6 +2056,11 @@ function repairCachedSecCashFlows(stocks: StockRecord[], cache: InvestmentCache)
     if (
       next.free_cash_flow !== stock.free_cash_flow
       || next.fcf_growth_pct !== stock.fcf_growth_pct
+      || next.revenue_growth_pct !== stock.revenue_growth_pct
+      || next.net_margin_pct !== stock.net_margin_pct
+      || next.roe_pct !== stock.roe_pct
+      || next.debt_to_equity !== stock.debt_to_equity
+      || next.shares_outstanding !== stock.shares_outstanding
       || next.field_audit?.free_cash_flow?.source !== stock.field_audit?.free_cash_flow?.source
     ) changed = true;
     return next;
