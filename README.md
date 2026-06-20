@@ -559,6 +559,8 @@ Investment Lab uses free sources conservatively and keeps missing data visible i
 - FMP historical EOD is still the preferred free-plan path for current price proxy, historical close, 52-week drawdown, and volatility when available.
 - Experimental Yahoo and public CSV sources are not treated as primary because browser/CORS/anti-bot restrictions can make them unreliable.
 - Generic web scraping is intentionally not used as a primary source. If a future adapter scrapes public pages, it must be marked low reliability, cached, source-audited, and must not overwrite higher-quality SEC, FMP, or manual data.
+- The Data Coverage Verification panel explains why a stock is below 100% real data, including missing fields, fallback/default score components, blocked endpoints, and the next best repair path.
+- Use **Re-audit All Stocks** after cache repair, SEC backfill, or FMP mapping fixes. It reapplies local FMP/SEC/manual cache to stored stock records and recalculates data coverage without making API calls.
 
 No free source can guarantee 100% coverage. If a company does not report a field, an endpoint is blocked by plan, or price history is unavailable, Data Coverage shows the exact missing reason and allows manual input.
 

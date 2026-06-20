@@ -18,7 +18,7 @@ function Test-HttpUrl {
         [int]$TimeoutSec = 2
     )
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec $TimeoutSec
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec $TimeoutSec -ErrorAction Stop
         return $response.StatusCode -ge 200 -and $response.StatusCode -lt 400
     } catch {
         return $false
@@ -28,14 +28,20 @@ function Test-HttpUrl {
 function Test-FrontendHealthy {
     param([string]$Url)
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 5
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 5 -ErrorAction Stop
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 400) { return $false }
         $cssLinks = [regex]::Matches($response.Content, 'href="([^"]*\.css[^"]*)"')
         if ($cssLinks.Count -eq 0) { return $false }
         foreach ($match in $cssLinks) {
             $href = $match.Groups[1].Value
             $cssUrl = if ($href.StartsWith("http")) { $href } else { "http://localhost:3000$href" }
-            if (-not (Test-HttpUrl -Url $cssUrl -TimeoutSec 5)) { return $false }
+            try {
+                $cssResponse = Invoke-WebRequest -UseBasicParsing -Uri $cssUrl -TimeoutSec 5 -ErrorAction Stop
+                if ($cssResponse.StatusCode -lt 200 -or $cssResponse.StatusCode -ge 400) { return $false }
+                if ($cssResponse.Content.Length -le 0) { return $false }
+            } catch {
+                return $false
+            }
         }
         return $true
     } catch {

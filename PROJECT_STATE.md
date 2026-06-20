@@ -129,6 +129,11 @@ See [PROJECT_GOAL.md](PROJECT_GOAL.md) for the product charter and
 - Scanner Diagnostics summarizes local universe state, FMP key presence, safe
   quota, endpoint health, bad cache counts, preview status, and likely scan
   blockers before spending calls.
+- Data Coverage Verification explains why individual stocks are below 100%
+  real data, highlights missing/fallback components, and separates automatic
+  repair paths from manual or blocked-data cases.
+- Re-audit All Stocks reapplies local FMP, SEC EDGAR, and manual cache to
+  stored stock records without making API calls.
 - `start-investment-lab.bat` starts the backend and frontend together, opens
   Investment Lab, and can trigger the free/local Stage 1 scan through
   `/investment-lab?autoscan=local`.

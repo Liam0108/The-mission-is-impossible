@@ -336,6 +336,18 @@ type CoverageRow = {
   hybridChecklist: HybridValidityChecklist;
   financialSectorWarning: boolean;
 };
+type DataCoverageVerificationRow = {
+  analysis: StockAnalysis;
+  coverageRow?: CoverageRow;
+  missingFields: string[];
+  fallbackComponents: string[];
+  automaticAction: string;
+  manualAction: string;
+  nextAction: string;
+  canAutoFix: boolean;
+  manualRequired: boolean;
+  severity: "good" | "caution" | "danger";
+};
 type HybridFieldStatus = {
   available: boolean;
   source: string;
@@ -2602,6 +2614,88 @@ function buildCoverageScanPreview(
   } satisfies CoverageScanPreview;
 }
 
+function auditSourceNeedsAttention(source: InvestmentDataSource) {
+  return source === "fallback" || source === "missing";
+}
+
+function buildDataCoverageVerificationRows(
+  analyses: StockAnalysis[],
+  coverageRows: CoverageRow[],
+  cache: InvestmentCache
+): DataCoverageVerificationRow[] {
+  const coverageByTicker = new Map(coverageRows.map((row) => [row.analysis.stock.ticker.toUpperCase(), row]));
+  return analyses
+    .map((analysis) => {
+      const ticker = analysis.stock.ticker.toUpperCase();
+      const coverageRow = coverageByTicker.get(ticker);
+      const missingFields = analysis.missingData;
+      const fallbackComponents = analysis.componentAudit
+        .filter((item) => auditSourceNeedsAttention(item.source))
+        .map((item) => `${item.label} (${item.source})`);
+      const repairableEndpointCount = coverageRow?.endpointIds.filter((endpointId) => {
+        const audit = fmpCacheAuditForEndpoint(cache, endpointId, ticker);
+        return audit?.category === "empty cache" || audit?.category === "failed cache";
+      }).length ?? 0;
+      const needsReaudit = fallbackComponents.length > 0 && !coverageRow?.scannable && !coverageRow?.requiresSecFallback;
+      const canAutoFix =
+        Boolean(coverageRow?.requiresSecFallback)
+        || Boolean(coverageRow?.scannable)
+        || repairableEndpointCount > 0
+        || needsReaudit;
+
+      let automaticAction = "No automatic repair needed";
+      if (coverageRow?.requiresSecFallback) {
+        automaticAction = "Run SEC EDGAR FCF/fundamental backfill";
+      } else if (repairableEndpointCount > 0) {
+        automaticAction = "Clear empty/failed FMP cache, then preview scan";
+      } else if (coverageRow?.scannable) {
+        automaticAction = coverageRow.secFcfAvailable
+          ? "Run Make Valid FMP scan; SEC FCF already available"
+          : "Run Make Valid FMP scan";
+      } else if (needsReaudit) {
+        automaticAction = "Re-audit local cache without API calls";
+      }
+
+      const manualRequired =
+        Boolean(coverageRow?.blockedFromValidity)
+        || (!canAutoFix && (missingFields.length > 0 || fallbackComponents.length > 0));
+      const manualAction = manualRequired
+        ? coverageRow?.blockingReason
+          || `Manual data needed: ${missingFields.slice(0, 4).join(", ") || fallbackComponents.slice(0, 3).join(", ")}`
+        : "Not required";
+      const nextAction = manualRequired && !canAutoFix
+        ? "Use manual fix or paid/alternate audited source"
+        : canAutoFix
+          ? automaticAction
+          : "No action";
+      const severity: DataCoverageVerificationRow["severity"] =
+        analysis.realDataPercent === 100 && fallbackComponents.length === 0 && missingFields.length === 0
+          ? "good"
+          : analysis.fallbackPercent >= 30 || manualRequired
+            ? "danger"
+            : "caution";
+      return {
+        analysis,
+        coverageRow,
+        missingFields,
+        fallbackComponents,
+        automaticAction,
+        manualAction,
+        nextAction,
+        canAutoFix,
+        manualRequired,
+        severity
+      } satisfies DataCoverageVerificationRow;
+    })
+    .sort((left, right) => {
+      const severityRank = { danger: 2, caution: 1, good: 0 };
+      return severityRank[right.severity] - severityRank[left.severity]
+        || right.analysis.fallbackPercent - left.analysis.fallbackPercent
+        || left.analysis.realDataPercent - right.analysis.realDataPercent
+        || right.analysis.stock.market_cap - left.analysis.stock.market_cap;
+    });
+}
+
 function scannedTickersToday(cache: InvestmentCache) {
   const today = todayKey();
   const tickers = new Set<string>();
@@ -3408,6 +3502,56 @@ export function InvestmentLab() {
     setStatus(
       `FMP cache repair cleared ${summary.cachesCleared} ${action} cache entr${summary.cachesCleared === 1 ? "y" : "ies"}. `
       + "Valid FMP caches, premium-blocked endpoint memory, SEC FCF cache, and quota counters were preserved."
+    );
+  }
+
+  function reauditAllInvestmentStocks() {
+    const cache = normalizeFmpDailyUsage(getCache());
+    const beforeAnalyses = analyzeRowsForCache(stocks, cache);
+    const beforeByTicker = new Map(beforeAnalyses.map((analysis) => [
+      analysis.stock.ticker.toUpperCase(),
+      {
+        realDataPercent: analysis.realDataPercent,
+        fallbackPercent: analysis.fallbackPercent,
+        missingCount: analysis.missingData.length,
+        scenarioLabel: analysis.valuation.scenarioValuation.decisionLabel
+      }
+    ]));
+    const beforeAverage = beforeAnalyses.length
+      ? beforeAnalyses.reduce((sum, analysis) => sum + analysis.realDataPercent, 0) / beforeAnalyses.length
+      : 0;
+    const fmpRepaired = repairCachedFmpMappings(stocks, cache, assumptions);
+    const secRepaired = repairCachedSecCashFlows(fmpRepaired.stocks, cache);
+    const afterAnalyses = analyzeRowsForCache(secRepaired.stocks, cache);
+    const afterAverage = afterAnalyses.length
+      ? afterAnalyses.reduce((sum, analysis) => sum + analysis.realDataPercent, 0) / afterAnalyses.length
+      : 0;
+    const improved = afterAnalyses.filter((analysis) => {
+      const before = beforeByTicker.get(analysis.stock.ticker.toUpperCase());
+      if (!before) return true;
+      return analysis.realDataPercent > before.realDataPercent
+        || analysis.fallbackPercent < before.fallbackPercent
+        || analysis.missingData.length < before.missingCount
+        || analysis.valuation.scenarioValuation.decisionLabel !== before.scenarioLabel;
+    }).length;
+    const originalByTicker = new Map(stocks.map((stock) => [stock.ticker.toUpperCase(), stock]));
+    const changedRecords = secRepaired.stocks.filter((stock) => {
+      const original = originalByTicker.get(stock.ticker.toUpperCase());
+      return !original
+        || usableStockFingerprint(stock) !== usableStockFingerprint(original)
+        || JSON.stringify(stock.field_audit ?? {}) !== JSON.stringify(original.field_audit ?? {});
+    }).length;
+    saveStocks(secRepaired.stocks);
+    setCache(cache);
+    setCacheInfo(cache);
+    setFmpCapabilities(capabilitiesFromCache(cache));
+    writeJson(FMP_MAPPING_COMPARISON_KEY, fmpRepaired.comparisons);
+    setMappingComparisons(fmpRepaired.comparisons);
+    setCoverageScanPreview(null);
+    setStatus(
+      `Re-audit completed locally with no API calls: ${afterAnalyses.length} stocks checked, `
+      + `${changedRecords} stored records refreshed, ${improved} audit result${improved === 1 ? "" : "s"} improved. `
+      + `Average real-data coverage ${beforeAverage.toFixed(1)}% -> ${afterAverage.toFixed(1)}%.`
     );
   }
 
@@ -4343,6 +4487,14 @@ export function InvestmentLab() {
       </> : null}
 
       {activeTab === "coverage" ? <>
+      <DataCoverageVerificationPanel
+        analyses={analyses}
+        coverageRows={coverageRows}
+        cache={cacheInfo}
+        busy={busy}
+        onReaudit={reauditAllInvestmentStocks}
+        onOpenScanner={() => changeActiveTab("scanner")}
+      />
       <SecCoverageManager
         rows={secCoverageRows}
         cache={cacheInfo}
@@ -4982,6 +5134,117 @@ function FmpCapabilityPanel({
         </table>
       </DataTableWrapper>
     </CollapsiblePanel>
+  );
+}
+
+function DataCoverageVerificationPanel({
+  analyses,
+  coverageRows,
+  cache,
+  busy,
+  onReaudit,
+  onOpenScanner
+}: {
+  analyses: StockAnalysis[];
+  coverageRows: CoverageRow[];
+  cache: InvestmentCache;
+  busy: boolean;
+  onReaudit: () => void;
+  onOpenScanner: () => void;
+}) {
+  const rows = buildDataCoverageVerificationRows(analyses, coverageRows, cache);
+  const fullCoverageCount = rows.filter((row) => row.severity === "good").length;
+  const fallbackCount = rows.filter((row) => row.fallbackComponents.length > 0).length;
+  const missingFieldCount = rows.reduce((sum, row) => sum + row.missingFields.length, 0);
+  const autoFixableCount = rows.filter((row) => row.canAutoFix && row.severity !== "good").length;
+  const manualOrBlockedCount = rows.filter((row) => row.manualRequired || row.coverageRow?.blockedFromValidity).length;
+  const visibleRows = rows.filter((row) => row.severity !== "good").slice(0, 60);
+
+  return (
+    <CollapsibleCard
+      title="Data Coverage Verification"
+      badge={<Badge>{fullCoverageCount} at 100% real data</Badge>}
+      defaultOpen
+      contentClassName="grid gap-4"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="max-w-4xl text-sm leading-6 text-muted">
+          This panel explains why a stock is not at 100% real data. Red items affect research reliability.
+          Re-audit uses only local cache and stored SEC/FMP/manual data; it does not make API requests.
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="primary" onClick={onReaudit} disabled={busy || !analyses.length}>
+            <RefreshCcw className="h-4 w-4" />
+            Re-audit All Stocks
+          </Button>
+          <Button type="button" variant="secondary" onClick={onOpenScanner} disabled={busy}>
+            Open Scanner
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <ValueBox label="Total Stocks Checked" value={`${rows.length}`} />
+        <ValueBox label="100% Real Data" value={`${fullCoverageCount}`} tone={fullCoverageCount ? "positive" : "neutral"} />
+        <ValueBox label="Fallback / Default Used" value={`${fallbackCount}`} tone={fallbackCount ? "danger" : "positive"} />
+        <ValueBox label="Missing Field Items" value={`${missingFieldCount}`} tone={missingFieldCount ? "danger" : "positive"} />
+        <ValueBox label="Auto-fixable" value={`${autoFixableCount}`} tone={autoFixableCount ? "caution" : "neutral"} />
+        <ValueBox label="Manual / Blocked" value={`${manualOrBlockedCount}`} tone={manualOrBlockedCount ? "danger" : "positive"} />
+      </div>
+
+      {visibleRows.length ? (
+        <div className="overflow-x-auto rounded-lg border border-stroke">
+          <table className="min-w-[1320px] w-full border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-stroke bg-canvas text-muted">
+                <th className="px-3 py-2 font-medium">Ticker</th>
+                <th className="px-3 py-2 font-medium">Real / Fallback</th>
+                <th className="px-3 py-2 font-medium">Missing Key Fields</th>
+                <th className="px-3 py-2 font-medium">Fallback Components</th>
+                <th className="px-3 py-2 font-medium">Automatic Path</th>
+                <th className="px-3 py-2 font-medium">Manual Needed</th>
+                <th className="px-3 py-2 font-medium">Next Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => (
+                <tr key={`coverage-verification-${row.analysis.stock.id}`} className="border-b border-stroke last:border-0">
+                  <td className="px-3 py-3 align-top">
+                    <div className="font-semibold text-ink">{row.analysis.stock.ticker}</div>
+                    <div className="mt-1 text-muted">{row.analysis.recommendation}</div>
+                  </td>
+                  <td className="px-3 py-3 align-top">
+                    <div className={cn("font-semibold", attentionTextClass(row.analysis.fallbackPercent > 0))}>
+                      {row.analysis.realDataPercent}% real
+                    </div>
+                    <div className={cn("mt-1", attentionMutedTextClass(row.analysis.fallbackPercent > 0))}>
+                      {row.analysis.fallbackPercent}% fallback/default
+                    </div>
+                  </td>
+                  <td className={cn("max-w-64 px-3 py-3 align-top", attentionMutedTextClass(row.missingFields.length > 0))}>
+                    <span className="break-words">{row.missingFields.join(", ") || "None"}</span>
+                  </td>
+                  <td className={cn("max-w-72 px-3 py-3 align-top", attentionMutedTextClass(row.fallbackComponents.length > 0))}>
+                    <span className="break-words">{row.fallbackComponents.join(", ") || "None"}</span>
+                  </td>
+                  <td className={cn("max-w-72 px-3 py-3 align-top", row.canAutoFix ? "text-caution" : "text-muted")}>
+                    <span className="break-words">{row.automaticAction}</span>
+                  </td>
+                  <td className={cn("max-w-80 px-3 py-3 align-top", attentionMutedTextClass(row.manualRequired))}>
+                    <span className="break-words">{row.manualAction}</span>
+                  </td>
+                  <td className={cn("max-w-80 px-3 py-3 align-top font-medium", row.severity === "danger" ? "text-danger" : row.severity === "caution" ? "text-caution" : "text-positive")}>
+                    <span className="break-words">{row.nextAction}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyState title="All loaded stocks are clean" description="No missing or fallback-driven data is visible in the current local dataset." />
+      )}
+    </CollapsibleCard>
   );
 }
 
