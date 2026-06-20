@@ -19,7 +19,25 @@ function Test-HttpUrl {
     )
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec $TimeoutSec
-        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
+        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 400
+    } catch {
+        return $false
+    }
+}
+
+function Test-FrontendHealthy {
+    param([string]$Url)
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 5
+        if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 400) { return $false }
+        $cssLinks = [regex]::Matches($response.Content, 'href="([^"]*\.css[^"]*)"')
+        if ($cssLinks.Count -eq 0) { return $false }
+        foreach ($match in $cssLinks) {
+            $href = $match.Groups[1].Value
+            $cssUrl = if ($href.StartsWith("http")) { $href } else { "http://localhost:3000$href" }
+            if (-not (Test-HttpUrl -Url $cssUrl -TimeoutSec 5)) { return $false }
+        }
+        return $true
     } catch {
         return $false
     }
@@ -93,9 +111,9 @@ if (-not (Test-HttpUrl -Url $BackendHealthUrl)) {
     Write-Host "Backend is already online."
 }
 
-if (-not (Test-HttpUrl -Url $FrontendHealthUrl)) {
+if (-not (Test-FrontendHealthy -Url $FrontendHealthUrl)) {
     Stop-Port -Port 3000
-    Write-Host "Starting frontend on port 3000..."
+    Write-Host "Starting frontend on port 3000. The frontend launcher will clear stale .next cache..."
     Start-Process -FilePath "cmd.exe" `
         -ArgumentList "/k", "`"$ProjectRoot\start-frontend.bat`"" `
         -WorkingDirectory $ProjectRoot `

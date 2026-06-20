@@ -29,6 +29,16 @@ cd /d "%FRONTEND_DIR%" || (
     exit /b 1
 )
 
+echo Stopping stale Next.js dev servers on port 3000...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":3000 .*LISTENING"') do (
+    taskkill /PID %%P /F >nul 2>nul
+)
+
+if exist ".next" (
+    echo Clearing stale Next.js cache...
+    rmdir /s /q ".next"
+)
+
 if not exist "node_modules" (
     echo Installing frontend dependencies...
     call npm.cmd install

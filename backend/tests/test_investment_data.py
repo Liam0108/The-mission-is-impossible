@@ -104,6 +104,23 @@ def sec_companyfacts_sample(*, negative_capex: bool = False):
                 "PaymentsToAcquirePropertyPlantAndEquipment": {
                     "units": {"USD": annual_rows(capex_values)}
                 },
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {"USD": annual_rows([(2024, 1000), (2023, 800)])}
+                },
+                "NetIncomeLoss": {
+                    "units": {"USD": annual_rows([(2024, 100), (2023, 80)])}
+                },
+                "StockholdersEquity": {
+                    "units": {"USD": annual_rows([(2024, 500), (2023, 400)])}
+                },
+                "DebtAndFinanceLeaseObligations": {
+                    "units": {"USD": annual_rows([(2024, 250), (2023, 260)])}
+                },
+            },
+            "dei": {
+                "EntityCommonStockSharesOutstanding": {
+                    "units": {"shares": annual_rows([(2024, 1000), (2023, 950)])}
+                },
             }
         },
     }
@@ -136,6 +153,13 @@ def test_extract_sec_cash_flow_uses_annual_10k_periods_and_averages():
     assert result["confidence"] == "High"
     assert result["operating_cash_flow_concept"] == "NetCashProvidedByUsedInOperatingActivities"
     assert result["capex_concept"] == "PaymentsToAcquirePropertyPlantAndEquipment"
+    assert result["revenue_growth_pct"] == pytest.approx(25)
+    assert result["net_margin_pct"] == pytest.approx(10)
+    assert result["roe_pct"] == pytest.approx(100 / 450 * 100)
+    assert result["debt_to_equity"] == pytest.approx(0.5)
+    assert result["shares_outstanding"] == 1000
+    assert result["fundamental_status"] == "success"
+    assert result["sec_fundamental_concepts"]["revenue"] == "RevenueFromContractWithCustomerExcludingAssessedTax"
 
 
 def test_extract_sec_cash_flow_normalizes_negative_capex_sign():

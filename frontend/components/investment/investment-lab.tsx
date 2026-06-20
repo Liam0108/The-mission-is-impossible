@@ -254,6 +254,15 @@ type SecCashFlowResult = {
   latest_fcf?: number | null;
   average_fcf_3y?: number | null;
   average_fcf_5y?: number | null;
+  revenue_growth_pct?: number | null;
+  net_margin_pct?: number | null;
+  roe_pct?: number | null;
+  debt_to_equity?: number | null;
+  shares_outstanding?: number | null;
+  fundamental_status?: "success" | "missing";
+  fundamental_error?: string;
+  sec_fundamental_concepts?: Record<string, string>;
+  sec_fundamental_periods?: Record<string, Array<string | number | null>>;
   latest_operating_cash_flow?: number | null;
   latest_capex?: number | null;
   operating_cash_flow_concept?: string;
@@ -2015,6 +2024,23 @@ function applySecCashFlow(stock: StockRecord, result: SecCashFlowResult) {
     incoming.fcf_growth_pct = ((latest.free_cash_flow - prior.free_cash_flow) / Math.abs(prior.free_cash_flow)) * 100;
     setFieldAudit(incoming, "fcf_growth_pct", incoming.fcf_growth_pct, "SEC EDGAR XBRL", timestamp);
   }
+  const applySecFundamental = (key: keyof StockRecord, value: unknown) => {
+    const parsed = finiteValue(value);
+    if (parsed === null) return;
+    const current = finiteValue(stock[key]);
+    const currentSource = stock.field_audit?.[String(key)]?.source;
+    const preserveExisting =
+      current !== null
+      && (currentSource === "manual" || String(currentSource ?? "").startsWith("FMP"));
+    if (preserveExisting) return;
+    (incoming as Record<string, unknown>)[key] = parsed;
+    setFieldAudit(incoming, String(key), parsed, "SEC EDGAR XBRL", timestamp);
+  };
+  applySecFundamental("revenue_growth_pct", result.revenue_growth_pct);
+  applySecFundamental("net_margin_pct", result.net_margin_pct);
+  applySecFundamental("roe_pct", result.roe_pct);
+  applySecFundamental("debt_to_equity", result.debt_to_equity);
+  applySecFundamental("shares_outstanding", result.shares_outstanding);
   return mergeStock(stock, incoming);
 }
 
@@ -3833,7 +3859,7 @@ export function InvestmentLab() {
   }
 
   async function runAutoCompleteAvailableData() {
-    setStatus("Auto data completion started: local universe, SEC FCF fallback, then safe FMP Make Valid scan.");
+    setStatus("Auto data completion started: local universe, SEC EDGAR FCF/fundamentals fallback, then safe FMP Make Valid scan.");
     const stage1Stocks = await runLocalStage1();
     const afterStage1Cache = getCache();
     const stage1Coverage = coverageRowsForCache(stage1Stocks, afterStage1Cache);
@@ -3860,7 +3886,7 @@ export function InvestmentLab() {
 
     if (!allocation.fmp_api_key.trim()) {
       setStatus(
-        `Auto data completion finished local + SEC steps. Add an FMP key to fill profile, price, ratios, income, and historical fields. `
+        `Auto data completion finished local + SEC steps. Add an FMP key to fill profile, price, ratios, income, and historical price fields. `
         + `${secTickers.length} SEC FCF candidate${secTickers.length === 1 ? "" : "s"} checked.`
       );
       return;
@@ -4427,9 +4453,9 @@ export function InvestmentLab() {
               One-Click Data Completion / 一键补全数据
             </Button>
             <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">
-              Runs local universe, SEC FCF fallback, and a safe FMP Make Valid batch in one flow. It cannot bypass
+              Runs local universe, SEC FCF/fundamentals fallback, and a safe FMP Make Valid batch in one flow. It cannot bypass
               premium-blocked endpoints or missing company disclosures; remaining gaps stay visible in Data Coverage.
-              一键运行本地股票池、SEC FCF 备用数据和安全 FMP 补全扫描；如果接口被套餐限制或公司没有披露数据，系统会保留缺口原因。
+              一键运行本地股票池、SEC FCF/基本面备用数据和安全 FMP 补全扫描；如果接口被套餐限制或公司没有披露数据，系统会保留缺口原因。
             </div>
             <Field label="FMP API Key / FMP 密钥">
               <Input type="password" value={allocation.fmp_api_key} onChange={(event) => saveAllocation({ ...allocation, fmp_api_key: event.target.value })} placeholder="Optional" />

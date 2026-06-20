@@ -541,12 +541,24 @@ This launcher:
 
 - starts the FastAPI backend on `http://127.0.0.1:8000`
 - starts the Next.js frontend on `http://localhost:3000`
+- checks that Next.js CSS assets load correctly; if stale `.next` cache causes CSS 404s, it restarts the frontend
 - creates `backend\.venv` and installs backend requirements if the virtual environment is missing
 - waits for `/health` and `/investment-lab`
 - opens `http://localhost:3000/investment-lab?autoscan=local`
 - automatically runs the free/local Stage 1 Investment Lab scan
 
 The default `start-fabio-lab.bat` delegates to the same one-click Investment Lab launcher. FMP deep scan still requires Preview and Confirm because it can spend quota.
+
+### Investment Lab Free Data Coverage
+
+Investment Lab uses free sources conservatively and keeps missing data visible instead of filling fake defaults.
+
+- SEC EDGAR XBRL is the main no-key fallback for company financial statements. It can fill FCF history, revenue growth, net margin, ROE, debt/equity, and shares outstanding when the issuer reports comparable XBRL facts.
+- FMP free-plan endpoints are used only when the user provides an FMP key and the endpoint is available under the current plan. Premium-blocked endpoints stay remembered and are not retried.
+- FMP historical EOD is still the preferred free-plan path for current price proxy, historical close, 52-week drawdown, and volatility when available.
+- Experimental Yahoo and public CSV sources are not treated as primary because browser/CORS/anti-bot restrictions can make them unreliable.
+
+No free source can guarantee 100% coverage. If a company does not report a field, an endpoint is blocked by plan, or price history is unavailable, Data Coverage shows the exact missing reason and allows manual input.
 
 ### Start Frontend
 
