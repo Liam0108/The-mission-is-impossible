@@ -872,6 +872,43 @@ function localizedRisk(language: Language, analysis: StockAnalysis) {
   return "主要风险来自模型不确定性和前瞻数据不足。";
 }
 
+function recommendationNeedsAttention(label: RecommendationLabel) {
+  return label === "Avoid" || label === "Insufficient Data" || label === "Wait for Better Price";
+}
+
+function riskNeedsAttention(label: RiskLabel) {
+  return label === "High Risk" || label === "Speculative";
+}
+
+function analysisNeedsAttention(analysis: StockAnalysis) {
+  return recommendationNeedsAttention(analysis.recommendation)
+    || riskNeedsAttention(analysis.riskLabel)
+    || analysis.realDataPercent < 70
+    || analysis.fallbackPercent > 30
+    || analysis.valuationRisk === "High"
+    || analysis.warnings.length > 0
+    || analysis.missingData.length > 0;
+}
+
+function scenarioDecisionNeedsAttention(label: string) {
+  return label === "Requires Bull Case"
+    || label === "Above Bull Case"
+    || label === "Speculative Premium"
+    || label === "Insufficient Scenario Data";
+}
+
+function scenarioRiskRewardNeedsAttention(label: string) {
+  return label === "Poor Risk/Reward" || label === "Speculative Premium";
+}
+
+function attentionTextClass(active: boolean) {
+  return active ? "text-danger" : "text-ink";
+}
+
+function attentionMutedTextClass(active: boolean) {
+  return active ? "text-danger" : "text-muted";
+}
+
 function warningText(language: Language, warning: string) {
   if (language !== "zh") return warning;
   if (warning.includes("missing or manual data")) return "推荐主要基于缺失数据或手动数据，可信度较低。";
@@ -4467,16 +4504,19 @@ function OverviewList({
             <tbody>
               {rows.map((analysis) => {
                 const scenario = analysis.valuation.scenarioValuation;
+                const needsAttention = showScenario
+                  ? scenarioDecisionNeedsAttention(scenario.decisionLabel) || !hasMeasurableScenarioRiskReward(analysis)
+                  : analysisNeedsAttention(analysis);
                 return (
                   <tr key={analysis.stock.id} className="border-b border-stroke/70 last:border-0">
                     <td className="px-3 py-2">
                       <div className="font-medium text-ink">{analysis.stock.ticker}</div>
                       <div className="max-w-40 truncate text-xs text-muted">{analysis.stock.company_name || "Company name unavailable"}</div>
                     </td>
-                    <td className="px-3 py-2 text-xs text-muted">
+                    <td className={cn("px-3 py-2 text-xs", attentionMutedTextClass(needsAttention))}>
                       {showScenario ? scenario.decisionLabel : recommendationLabel(language, analysis.recommendation)}
                     </td>
-                    <td className="px-3 py-2 text-right font-semibold text-ink">
+                    <td className={cn("px-3 py-2 text-right font-semibold", attentionTextClass(needsAttention))}>
                       {showScenario ? comparisonValue(scenario.riskRewardRatio) : analysis.totalScore}
                     </td>
                   </tr>
@@ -5328,6 +5368,8 @@ function DataCoverageManager({
         : "No symbols were selected for this batch. Try a smaller batch after refreshing the preview or review scan priority filters.";
   const hybridFieldLabel = (field: HybridFieldStatus) =>
     field.available ? `Yes · ${field.source}` : "No · --";
+  const hybridFieldClass = (field: HybridFieldStatus) =>
+    attentionMutedTextClass(!field.available);
   const updateWeight = (key: keyof ScanPriorityWeights, value: number | null) => {
     onPrioritySettingsChange({
       ...prioritySettings,
@@ -5694,11 +5736,25 @@ function DataCoverageManager({
                     <td className="px-3 py-3 font-semibold text-ink">{row.ticker}</td>
                     <td className="px-3 py-3 font-semibold text-ink">{row.priorityScore}</td>
                     <td className="max-w-80 px-3 py-3 text-muted"><span className="break-words">{row.priorityReason}</span></td>
-                    <td className="px-3 py-3"><Badge>{row.secFcfAvailable ? "SEC fallback available" : "No"}</Badge></td>
+                    <td className="px-3 py-3">
+                      <Badge className={row.secFcfAvailable ? "" : "border-danger/40 text-danger"}>
+                        {row.secFcfAvailable ? "SEC fallback available" : "No"}
+                      </Badge>
+                    </td>
                     <td className="max-w-96 px-3 py-3 text-muted">
                       <div className="flex flex-wrap gap-1.5">
                         {row.missingEndpoints.map((endpoint) => (
-                          <Badge key={`${row.ticker}-${endpoint.id}`} className="min-h-6 px-2 py-0.5">
+                          <Badge
+                            key={`${row.ticker}-${endpoint.id}`}
+                            className={cn(
+                              "min-h-6 px-2 py-0.5",
+                              (endpoint.status === "blocked by plan"
+                                || endpoint.status === "unavailable"
+                                || endpoint.status === "empty cache"
+                                || endpoint.status === "failed cache")
+                                && "border-danger/40 text-danger"
+                            )}
+                          >
                             {endpoint.id}: {endpoint.status}
                             {endpoint.cacheCategory === "stale cache" ? " (stale cache)" : ""}
                           </Badge>
@@ -5707,9 +5763,11 @@ function DataCoverageManager({
                       </div>
                     </td>
                     <td className="px-3 py-3 font-medium text-ink">{row.estimatedCalls}</td>
-                    <td className="px-3 py-3 font-medium text-ink">{row.estimatedChancePct}%</td>
-                    <td className="px-3 py-3"><Badge>{row.likelihood}</Badge></td>
-                    <td className="max-w-96 px-3 py-3 text-muted">
+                    <td className={cn("px-3 py-3 font-medium", attentionTextClass(row.estimatedChancePct < 30))}>{row.estimatedChancePct}%</td>
+                    <td className="px-3 py-3">
+                      <Badge className={row.likelihood === "Low" ? "border-danger/40 text-danger" : ""}>{row.likelihood}</Badge>
+                    </td>
+                    <td className={cn("max-w-96 px-3 py-3", attentionMutedTextClass(Boolean(row.blockingReason) || row.likelihood === "Low"))}>
                       <span className="break-words">{row.blockingReason || row.likelihoodReason}</span>
                     </td>
                   </tr>
@@ -5771,14 +5829,14 @@ function DataCoverageManager({
                     <td className="px-3 py-3 font-semibold text-ink">{row.priorityScore}</td>
                     <td className="max-w-80 px-3 py-3 text-muted"><span className="break-words">{row.priorityReason}</span></td>
                     <td className="px-3 py-3 text-muted">{compactMoney(stock.market_cap)}</td>
-                    <td className="px-3 py-3 text-muted">{row.analysis.realDataPercent}%</td>
-                    <td className="max-w-56 px-3 py-3 text-muted"><span className="break-words">{hybridFieldLabel(row.hybridChecklist.price)}</span></td>
-                    <td className="max-w-56 px-3 py-3 text-muted"><span className="break-words">{hybridFieldLabel(row.hybridChecklist.shares)}</span></td>
-                    <td className="max-w-64 px-3 py-3 text-muted"><span className="break-words">{hybridFieldLabel(row.hybridChecklist.incomeStatement)}</span></td>
-                    <td className="max-w-64 px-3 py-3 text-muted"><span className="break-words">{hybridFieldLabel(row.hybridChecklist.historicalEod)}</span></td>
-                    <td className="max-w-56 px-3 py-3 text-muted"><span className="break-words">{hybridFieldLabel(row.hybridChecklist.fcf)}</span></td>
-                    <td className="px-3 py-3"><Badge>{row.hybridChecklist.scenarioValid ? "Yes" : "No"}</Badge></td>
-                    <td className="max-w-96 px-3 py-3 text-muted"><span className="break-words">{row.reasons.join(", ")}</span></td>
+                    <td className={cn("px-3 py-3", attentionMutedTextClass(row.analysis.realDataPercent < 70))}>{row.analysis.realDataPercent}%</td>
+                    <td className={cn("max-w-56 px-3 py-3", hybridFieldClass(row.hybridChecklist.price))}><span className="break-words">{hybridFieldLabel(row.hybridChecklist.price)}</span></td>
+                    <td className={cn("max-w-56 px-3 py-3", hybridFieldClass(row.hybridChecklist.shares))}><span className="break-words">{hybridFieldLabel(row.hybridChecklist.shares)}</span></td>
+                    <td className={cn("max-w-64 px-3 py-3", hybridFieldClass(row.hybridChecklist.incomeStatement))}><span className="break-words">{hybridFieldLabel(row.hybridChecklist.incomeStatement)}</span></td>
+                    <td className={cn("max-w-64 px-3 py-3", hybridFieldClass(row.hybridChecklist.historicalEod))}><span className="break-words">{hybridFieldLabel(row.hybridChecklist.historicalEod)}</span></td>
+                    <td className={cn("max-w-56 px-3 py-3", hybridFieldClass(row.hybridChecklist.fcf))}><span className="break-words">{hybridFieldLabel(row.hybridChecklist.fcf)}</span></td>
+                    <td className="px-3 py-3"><Badge className={row.hybridChecklist.scenarioValid ? "" : "border-danger/40 text-danger"}>{row.hybridChecklist.scenarioValid ? "Yes" : "No"}</Badge></td>
+                    <td className={cn("max-w-96 px-3 py-3", attentionMutedTextClass(Boolean(row.reasons.length)))}><span className="break-words">{row.reasons.join(", ")}</span></td>
                     <td className="max-w-80 px-3 py-3 text-muted">
                       <div className="flex flex-wrap gap-1.5">
                         {row.endpointNeeds.map((endpoint) => (
@@ -5798,10 +5856,10 @@ function DataCoverageManager({
                       </div>
                     </td>
                     <td className="max-w-80 px-3 py-3 text-muted">
-                      <div className="font-medium text-ink">{row.estimatedChancePct}% estimated</div>
-                      {row.blockingReason ? <div className="mt-1 break-words">{row.blockingReason}</div> : null}
+                      <div className={cn("font-medium", attentionTextClass(row.estimatedChancePct < 30))}>{row.estimatedChancePct}% estimated</div>
+                      {row.blockingReason ? <div className="mt-1 break-words text-danger">{row.blockingReason}</div> : null}
                     </td>
-                    <td className="max-w-72 px-3 py-3 text-muted">
+                    <td className={cn("max-w-72 px-3 py-3", attentionMutedTextClass(row.financialSectorWarning))}>
                       {row.financialSectorWarning
                         ? "DCF may not be suitable. Consider financial-sector valuation later."
                         : "--"}
@@ -5855,13 +5913,20 @@ function NumberField({ label, value, onChange }: { label: string; value: number 
 }
 
 function SmallRank({ analysis, language }: { analysis: StockAnalysis; language: Language }) {
+  const needsAttention = analysisNeedsAttention(analysis);
   return (
-    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm">
+    <div className={cn(
+      "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border bg-canvas px-3 py-2 text-sm",
+      needsAttention ? "border-danger/40" : "border-stroke"
+    )}>
       <div className="min-w-0">
         <div className="truncate font-medium text-ink">{analysis.stock.ticker}</div>
-        <div className="break-words text-xs text-muted">{recommendationLabel(language, analysis.recommendation)} - {analysis.realDataPercent}% real data</div>
+        <div className={cn("break-words text-xs", attentionMutedTextClass(needsAttention))}>
+          {recommendationLabel(language, analysis.recommendation)} - {analysis.realDataPercent}% real data
+          {riskNeedsAttention(analysis.riskLabel) ? ` - ${riskLabel(language, analysis.riskLabel)}` : ""}
+        </div>
       </div>
-      <div className="text-right font-semibold text-ink">{analysis.totalScore}</div>
+      <div className={cn("text-right font-semibold", attentionTextClass(needsAttention))}>{analysis.totalScore}</div>
     </div>
   );
 }
@@ -5966,11 +6031,25 @@ function AllocationCard({ language, title, allocation, saveAllocation }: { langu
   );
 }
 
-function ValueBox({ label, value }: { label: string; value: string }) {
+function ValueBox({
+  label,
+  value,
+  tone = "neutral"
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "danger" | "positive" | "caution";
+}) {
   return (
     <div className="min-w-0 rounded-lg border border-stroke bg-canvas px-3 py-2">
       <div className="break-words text-xs text-muted">{label}</div>
-      <div className="mt-1 break-words text-lg font-semibold text-ink">{value}</div>
+      <div className={cn(
+        "mt-1 break-words text-lg font-semibold",
+        tone === "danger" && "text-danger",
+        tone === "positive" && "text-positive",
+        tone === "caution" && "text-caution",
+        tone === "neutral" && "text-ink"
+      )}>{value}</div>
     </div>
   );
 }
@@ -5991,12 +6070,13 @@ function ScoreBreakdownBox({
         {rows.map(([label, value]) => {
           const source = audit.find((item) => item.label === label)?.source;
           const unreliable = source === "fallback" || source === "missing";
+          const weakScore = value < 50;
           return (
-            <div key={label} className="flex items-center justify-between gap-3 text-xs text-muted">
+            <div key={label} className={cn("flex items-center justify-between gap-3 text-xs", attentionMutedTextClass(unreliable || weakScore))}>
               <span>{label}</span>
-              <span className="text-right font-medium text-ink">
+              <span className={cn("text-right font-medium", attentionTextClass(unreliable || weakScore))}>
                 {Math.round(value)}
-                {unreliable ? <span className="ml-1 font-normal text-muted">({source})</span> : null}
+                {unreliable ? <span className="ml-1 font-normal text-danger">({source})</span> : null}
               </span>
             </div>
           );
@@ -6086,7 +6166,7 @@ function DataSourceAudit({ analysis, cache }: { analysis: StockAnalysis; cache: 
           </tbody>
           </table>
         </div>
-        <div className="mt-3 break-words text-xs text-muted">
+        <div className={cn("mt-3 break-words text-xs", attentionMutedTextClass(analysis.missingData.length > 0))}>
           Missing key fields: {analysis.missingData.join(", ") || "None"}
         </div>
         <div className="mt-3 rounded-lg border border-stroke bg-canvas p-3 text-xs">
@@ -6900,25 +6980,25 @@ function ScenarioValuationEngine({ analysis }: { analysis: StockAnalysis }) {
           <div className="text-sm font-medium text-ink">Scenario Valuation Engine</div>
           <div className="mt-1 text-xs text-muted">Bear, Base, and Bull outcomes using explicit DCF assumptions.</div>
         </div>
-        <Badge>{scenarioResult.decisionLabel}</Badge>
+        <Badge className={scenarioDecisionNeedsAttention(scenarioResult.decisionLabel) ? "border-danger/40 text-danger" : ""}>{scenarioResult.decisionLabel}</Badge>
       </summary>
       <div className="grid gap-4 border-t border-stroke p-3 sm:p-4">
         <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm text-muted">
           {scenarioResult.explanation} Research only; this view does not change scoring or recommendations.
         </div>
         {scenarioResult.missingReasons.length ? (
-          <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm font-medium text-ink">
+          <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm font-medium text-danger">
             Scenario data missing: {scenarioResult.missingReasons.join(", ")}.
           </div>
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ValueBox label="Weighted Fair Value" value={scenarioResult.weightedFairValue ? money(scenarioResult.weightedFairValue) : "--"} />
-          <ValueBox label="Weighted Upside / Downside" value={comparisonValue(scenarioResult.weightedUpsideDownsidePct, "%")} />
-          <ValueBox label="Expected Annual Return" value={comparisonValue(scenarioResult.expectedAnnualizedReturnPct, "%")} />
-          <ValueBox label="Risk / Reward" value={scenarioRatioDisplay(analysis)} />
-          <ValueBox label="Downside to Bear" value={comparisonValue(scenarioResult.downsideToBearPct, "%")} />
-          <ValueBox label="Upside to Bull" value={comparisonValue(scenarioResult.upsideToBullPct, "%")} />
-          <ValueBox label="Risk / Reward Label" value={scenarioResult.riskRewardLabel} />
+          <ValueBox label="Weighted Upside / Downside" value={comparisonValue(scenarioResult.weightedUpsideDownsidePct, "%")} tone={(scenarioResult.weightedUpsideDownsidePct ?? 0) < 0 ? "danger" : "neutral"} />
+          <ValueBox label="Expected Annual Return" value={comparisonValue(scenarioResult.expectedAnnualizedReturnPct, "%")} tone={(scenarioResult.expectedAnnualizedReturnPct ?? 0) < 0 ? "danger" : "neutral"} />
+          <ValueBox label="Risk / Reward" value={scenarioRatioDisplay(analysis)} tone={!hasMeasurableScenarioRiskReward(analysis) || (scenarioResult.riskRewardRatio ?? 999) < 1 ? "danger" : "neutral"} />
+          <ValueBox label="Downside to Bear" value={comparisonValue(scenarioResult.downsideToBearPct, "%")} tone={(scenarioResult.downsideToBearPct ?? 0) < -20 ? "danger" : "neutral"} />
+          <ValueBox label="Upside to Bull" value={comparisonValue(scenarioResult.upsideToBullPct, "%")} tone={(scenarioResult.upsideToBullPct ?? 0) <= 0 ? "danger" : "neutral"} />
+          <ValueBox label="Risk / Reward Label" value={scenarioResult.riskRewardLabel} tone={scenarioRiskRewardNeedsAttention(scenarioResult.riskRewardLabel) ? "danger" : "neutral"} />
           <ValueBox label="Probabilities" value={`${scenarioResult.probabilities.bear}% / ${scenarioResult.probabilities.base}% / ${scenarioResult.probabilities.bull}%`} />
         </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -6928,13 +7008,13 @@ function ScenarioValuationEngine({ analysis }: { analysis: StockAnalysis }) {
                 <div className="text-sm font-semibold text-ink">{scenario.name} Case</div>
                 {scenario.name === "Base" ? <Badge>Primary DCF</Badge> : null}
               </div>
-              <div className="mt-3 text-2xl font-semibold text-ink">
+              <div className={cn("mt-3 text-2xl font-semibold", attentionTextClass((scenario.upsideDownsidePct ?? 0) < 0))}>
                 {scenario.fairValue ? money(scenario.fairValue) : "--"}
               </div>
               <div className="mt-1 text-xs text-muted">Fair value</div>
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <ValueBox label="Upside / Downside" value={comparisonValue(scenario.upsideDownsidePct, "%")} />
-                <ValueBox label="Implied Annual Return" value={comparisonValue(scenario.impliedAnnualReturnPct, "%")} />
+                <ValueBox label="Upside / Downside" value={comparisonValue(scenario.upsideDownsidePct, "%")} tone={(scenario.upsideDownsidePct ?? 0) < 0 ? "danger" : "neutral"} />
+                <ValueBox label="Implied Annual Return" value={comparisonValue(scenario.impliedAnnualReturnPct, "%")} tone={(scenario.impliedAnnualReturnPct ?? 0) < 0 ? "danger" : "neutral"} />
               </div>
               <div className="mt-3 grid gap-1 text-xs leading-5 text-muted">
                 <div className="break-words">FCF: {compactMoney(scenario.baseFcf)} ({scenario.fcfSource})</div>
@@ -6994,27 +7074,27 @@ function AnalysisDetail({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="break-words text-base font-semibold text-ink sm:text-lg">{analysis.stock.ticker} - {analysis.stock.company_name || analysis.stock.ticker}</div>
-                <div className="mt-1 break-words text-sm text-muted">{recommendationLabel(language, analysis.recommendation)} - {riskLabel(language, analysis.riskLabel)}</div>
+                <div className={cn("mt-1 break-words text-sm", attentionMutedTextClass(analysisNeedsAttention(analysis)))}>{recommendationLabel(language, analysis.recommendation)} - {riskLabel(language, analysis.riskLabel)}</div>
               </div>
-              <Badge>{analysis.totalScore}/100</Badge>
+              <Badge className={analysisNeedsAttention(analysis) ? "border-danger/40 text-danger" : ""}>{analysis.totalScore}/100</Badge>
             </div>
             <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               <ValueBox label="Quality" value={`${analysis.breakdown.quality}`} />
               <ValueBox label="Valuation" value={`${analysis.breakdown.valuation}`} />
-              <ValueBox label="Risk" value={`${analysis.breakdown.risk}`} />
+              <ValueBox label="Risk" value={`${analysis.breakdown.risk}`} tone={analysis.breakdown.risk < 50 || riskNeedsAttention(analysis.riskLabel) ? "danger" : "neutral"} />
               <ValueBox label={language === "zh" ? "数据可靠性" : "Data Reliability"} value={`${analysis.dataReliabilityScore}/100`} />
-              <ValueBox label="Real Data Impact" value={`${analysis.realDataPercent}%`} />
-              <ValueBox label="Fallback Impact" value={`${analysis.fallbackPercent}%`} />
+              <ValueBox label="Real Data Impact" value={`${analysis.realDataPercent}%`} tone={analysis.realDataPercent < 70 ? "danger" : "neutral"} />
+              <ValueBox label="Fallback Impact" value={`${analysis.fallbackPercent}%`} tone={analysis.fallbackPercent > 30 ? "danger" : "neutral"} />
               <ValueBox label={language === "zh" ? "推荐信心" : "Confidence"} value={language === "zh" ? ({ High: "高", Medium: "中", Low: "低" }[analysis.recommendationConfidence]) : analysis.recommendationConfidence} />
               <ValueBox label={language === "zh" ? "估值一致性" : "Valuation Agreement"} value={language === "zh" ? ({ Aligned: "一致", Mixed: "部分一致", Disagree: "明显分歧", Unknown: "未知" }[analysis.valuation.valuationAgreement]) : analysis.valuation.valuationAgreement} />
               <ValueBox label="Primary DCF Mode" value={analysis.valuation.primaryDcfMode} />
               <ValueBox label="DCF" value={analysis.valuation.dcfFairValue ? money(analysis.valuation.dcfFairValue) : "--"} />
-              <ValueBox label="Premium Above Fair Value" value={comparisonValue(fairValuePremiumPct(analysis), "%")} />
+              <ValueBox label="Premium Above Fair Value" value={comparisonValue(fairValuePremiumPct(analysis), "%")} tone={(fairValuePremiumPct(analysis) ?? 0) > 0 ? "danger" : "neutral"} />
               <ValueBox label={t.conservativeBuy} value={analysis.valuation.conservativeBuyPrice ? money(analysis.valuation.conservativeBuyPrice) : "--"} />
               <ValueBox label={t.betterPrice} value={analysis.betterBuyPrice ? money(analysis.betterBuyPrice) : "--"} />
             </div>
             {analysis.fallbackPercent > 30 ? (
-              <div className="mt-3 rounded-lg border border-stroke bg-panel px-3 py-2 text-sm font-medium text-ink">
+              <div className="mt-3 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm font-medium text-danger">
                 Score unreliable due to missing data
               </div>
             ) : null}
@@ -7054,17 +7134,17 @@ function AnalysisDetail({
             <DataSourceAudit analysis={analysis} cache={cache} />
             <div className="mt-4 grid min-w-0 gap-2 break-words text-sm text-muted">
               {localizedReasons(language, analysis).map((reason) => <div key={reason}>{reason}</div>)}
-              <div>{t.biggestRisk}: {localizedRisk(language, analysis)}</div>
+              <div className={riskNeedsAttention(analysis.riskLabel) || analysis.valuationRisk === "High" ? "text-danger" : ""}>{t.biggestRisk}: {localizedRisk(language, analysis)}</div>
               <div>{t.fairValue}: {analysis.valuation.fairValueLow ? `${money(analysis.valuation.fairValueLow)} - ${money(analysis.valuation.fairValueHigh ?? analysis.valuation.fairValueLow)}` : "--"}</div>
               <div>{t.holdZone}: {analysis.valuation.holdZoneLow ? `${money(analysis.valuation.holdZoneLow)} - ${money(analysis.valuation.holdZoneHigh ?? analysis.valuation.holdZoneLow)}` : "--"}</div>
-              <div>{t.trimZone}: {analysis.valuation.trimZonePrice ? money(analysis.valuation.trimZonePrice) : "--"}</div>
+              <div className={(fairValuePremiumPct(analysis) ?? 0) > 0 ? "text-danger" : ""}>{t.trimZone}: {analysis.valuation.trimZonePrice ? money(analysis.valuation.trimZonePrice) : "--"}</div>
               <div>{t.positionSize}: {analysis.positionSizeRange}</div>
-              <div>{t.missingData}: {analysis.missingData.join(", ") || "--"}</div>
+              <div className={analysis.missingData.length ? "text-danger" : ""}>{t.missingData}: {analysis.missingData.join(", ") || "--"}</div>
               <div>{language === "zh" ? "DCF 假设" : "DCF assumptions"}: {analysis.valuation.dcfAssumptions.discount_rate_pct}% discount, {analysis.valuation.dcfAssumptions.terminal_growth_pct}% terminal, {analysis.valuation.dcfAssumptions.projection_years} years, {analysis.valuation.dcfAssumptions.base_fcf_growth_pct}% base growth</div>
               {analysis.warnings.length ? (
                 <div className="grid gap-1">
                   {analysis.warnings.map((warning) => (
-                    <div key={warning} className="rounded-md border border-stroke bg-panel px-2 py-1 text-ink">{warningText(language, warning)}</div>
+                    <div key={warning} className="rounded-md border border-danger/40 bg-danger/10 px-2 py-1 text-danger">{warningText(language, warning)}</div>
                   ))}
                 </div>
               ) : null}
