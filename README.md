@@ -554,9 +554,11 @@ The default `start-fabio-lab.bat` delegates to the same one-click Investment Lab
 Investment Lab uses free sources conservatively and keeps missing data visible instead of filling fake defaults.
 
 - SEC EDGAR XBRL is the main no-key fallback for company financial statements. It can fill FCF history, revenue growth, net margin, ROE, debt/equity, and shares outstanding when the issuer reports comparable XBRL facts.
+- The SEC Coverage Manager can run a full free SEC backfill in 25-symbol batches. This may take several minutes for hundreds of tickers because the app respects SEC rate limits and local caching.
 - FMP free-plan endpoints are used only when the user provides an FMP key and the endpoint is available under the current plan. Premium-blocked endpoints stay remembered and are not retried.
 - FMP historical EOD is still the preferred free-plan path for current price proxy, historical close, 52-week drawdown, and volatility when available.
 - Experimental Yahoo and public CSV sources are not treated as primary because browser/CORS/anti-bot restrictions can make them unreliable.
+- Generic web scraping is intentionally not used as a primary source. If a future adapter scrapes public pages, it must be marked low reliability, cached, source-audited, and must not overwrite higher-quality SEC, FMP, or manual data.
 
 No free source can guarantee 100% coverage. If a company does not report a field, an endpoint is blocked by plan, or price history is unavailable, Data Coverage shows the exact missing reason and allows manual input.
 

@@ -3876,11 +3876,11 @@ export function InvestmentLab() {
       .filter((row) =>
         (row.reasons.includes("missing FCF") || row.reasons.includes("missing 3-year FCF history"))
         && !row.secFcfAvailable
+        && secCashFlowEntry(afterStage1Cache, row.analysis.stock.ticker)?.date !== todayKey()
       )
-      .slice(0, 25)
       .map((row) => row.analysis.stock.ticker);
     const afterSecStocks = secTickers.length
-      ? await runSecCoverageBatch(secTickers.length, secTickers, false, stage1Stocks)
+      ? await runSecBackfillBatches(secTickers, stage1Stocks)
       : stage1Stocks;
     const latestCache = normalizeFmpDailyUsage(getCache());
     const latestCoverageRows = coverageRowsForCache(afterSecStocks, latestCache);
@@ -3896,7 +3896,7 @@ export function InvestmentLab() {
     if (!allocation.fmp_api_key.trim()) {
       setStatus(
         `Auto data completion finished local + SEC steps. Add an FMP key to fill profile, price, ratios, income, and historical price fields. `
-        + `${secTickers.length} SEC FCF candidate${secTickers.length === 1 ? "" : "s"} checked.`
+        + `${secTickers.length} SEC FCF/fundamental candidate${secTickers.length === 1 ? "" : "s"} checked in free official-data batches.`
       );
       return;
     }
@@ -3928,6 +3928,47 @@ export function InvestmentLab() {
     setStatus((current) =>
       `${current} Auto completion used every currently available safe source. Some stocks may still be incomplete if data is unavailable, premium-blocked, or requires manual input.`
     );
+  }
+
+  async function runSecBackfillBatches(selectedTickers: string[], stockBase = stocks) {
+    const uniqueTickers = [...new Set(selectedTickers.map((ticker) => ticker.trim().toUpperCase()).filter(Boolean))];
+    if (!uniqueTickers.length) return stockBase;
+    let updated = stockBase;
+    const batchSize = 25;
+    for (let index = 0; index < uniqueTickers.length; index += batchSize) {
+      const batch = uniqueTickers.slice(index, index + batchSize);
+      setStatus(
+        `SEC EDGAR free backfill running: ${index + 1}-${index + batch.length} of ${uniqueTickers.length}. `
+        + "This uses official SEC data, not FMP quota."
+      );
+      updated = await runSecCoverageBatch(batch.length, batch, false, updated);
+    }
+    const latestCache = getCache();
+    const remainingMissingFcf = coverageRowsForCache(updated, latestCache)
+      .filter((row) => !row.hybridChecklist.fcf.available).length;
+    setStatus(
+      `SEC EDGAR free backfill finished for ${uniqueTickers.length} symbol${uniqueTickers.length === 1 ? "" : "s"}. `
+      + `${remainingMissingFcf} insufficient record${remainingMissingFcf === 1 ? "" : "s"} still lack a usable FCF source. `
+      + "Remaining gaps may require FMP historical/price data or manual input."
+    );
+    return updated;
+  }
+
+  async function runAllSecCoverageBackfill() {
+    const cache = getCache();
+    const rows = coverageRowsForCache(stocks, cache);
+    const tickers = rows
+      .filter((row) =>
+        (row.reasons.includes("missing FCF") || row.reasons.includes("missing 3-year FCF history"))
+        && !row.secFcfAvailable
+        && secCashFlowEntry(cache, row.analysis.stock.ticker)?.date !== todayKey()
+      )
+      .map((row) => row.analysis.stock.ticker);
+    if (!tickers.length) {
+      setStatus("No fresh SEC EDGAR backfill candidates are available today. Review cached SEC results or use manual fixes.");
+      return;
+    }
+    await runSecBackfillBatches(tickers, stocks);
   }
 
   function runFmpScan() {
@@ -4301,6 +4342,7 @@ export function InvestmentLab() {
         busy={busy}
         backendOnline={backendOnline}
         onScan={(limit) => void runSecCoverageBatch(limit)}
+        onScanAll={() => void runAllSecCoverageBackfill()}
       />
       <FmpCapabilityPanel
         capabilities={fmpCapabilities}
@@ -5248,7 +5290,8 @@ function SecCoverageManager({
   stats,
   busy,
   backendOnline,
-  onScan
+  onScan,
+  onScanAll
 }: {
   rows: CoverageRow[];
   cache: InvestmentCache;
@@ -5256,6 +5299,7 @@ function SecCoverageManager({
   busy: boolean;
   backendOnline: boolean | null;
   onScan: (limit: number) => void;
+  onScanAll: () => void;
 }) {
   const freshCandidates = rows.filter(
     (row) => secCashFlowEntry(cache, row.analysis.stock.ticker)?.date !== todayKey()
@@ -5268,7 +5312,8 @@ function SecCoverageManager({
       contentClassName="grid gap-4"
     >
       <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">
-        SEC company facts provide annual operating cash flow and capital expenditure from filed XBRL data.
+        SEC company facts provide annual operating cash flow, capital expenditure, revenue growth, margin, ROE,
+        debt/equity, and shares outstanding from filed XBRL data.
         Requests are routed through FastAPI, cached locally, and limited to about one SEC request per second.
       </div>
       {backendOnline === false ? (
@@ -5290,6 +5335,9 @@ function SecCoverageManager({
         </Button>
         <Button type="button" variant="secondary" disabled={busy || backendOnline === false || freshCandidates.length === 0} onClick={() => onScan(25)}>
           Fetch Next 25 SEC FCF
+        </Button>
+        <Button type="button" variant="primary" disabled={busy || backendOnline === false || freshCandidates.length === 0} onClick={onScanAll}>
+          Run All Free SEC Backfill
         </Button>
       </div>
       <div className="overflow-x-auto rounded-lg border border-stroke">
