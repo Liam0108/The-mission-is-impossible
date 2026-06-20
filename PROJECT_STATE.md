@@ -129,6 +129,9 @@ See [PROJECT_GOAL.md](PROJECT_GOAL.md) for the product charter and
 - Scanner Diagnostics summarizes local universe state, FMP key presence, safe
   quota, endpoint health, bad cache counts, preview status, and likely scan
   blockers before spending calls.
+- `start-investment-lab.bat` starts the backend and frontend together, opens
+  Investment Lab, and can trigger the free/local Stage 1 scan through
+  `/investment-lab?autoscan=local`.
 - Local Data Backup in Investment Lab diagnostics exports and restores known
   browser localStorage keys for trades, Investment Lab cache/settings, Market
   Lab validation data, freedom goals, checklist state, and preferences.

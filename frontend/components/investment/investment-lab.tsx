@@ -1,6 +1,6 @@
 "use client";
 
-import { type ChangeEvent, FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -3067,12 +3067,22 @@ export function InvestmentLab() {
   const [secInspectorTicker, setSecInspectorTicker] = useState("AAPL");
   const [busy, setBusy] = useState(false);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
+  const [autoLocalScanRequested, setAutoLocalScanRequested] = useState(false);
+  const runLocalStage1Ref = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLanguage(getStoredLanguage());
     const storedTab = window.localStorage.getItem(INVESTMENT_TAB_KEY) as InvestmentTab | null;
     if (storedTab && INVESTMENT_TABS.some((tab) => tab.id === storedTab)) setActiveTab(storedTab);
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("autoscan") === "local") {
+      setActiveTab("scanner");
+      window.localStorage.setItem(INVESTMENT_TAB_KEY, "scanner");
+      url.searchParams.delete("autoscan");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      setAutoLocalScanRequested(true);
+    }
     const storedStocks = readJson<StockRecord[]>(STOCKS_KEY, []);
     setHoldings(readJson<Holding[]>(HOLDINGS_KEY, []));
     setWatchlist(readJson<WatchlistItem[]>(WATCHLIST_KEY, []));
@@ -3407,6 +3417,14 @@ export function InvestmentLab() {
       setBusy(false);
     }
   }
+  runLocalStage1Ref.current = runLocalStage1;
+
+  useEffect(() => {
+    if (!autoLocalScanRequested) return;
+    setAutoLocalScanRequested(false);
+    setStatus("One-click local scan started. Loading the local universe and available cached/FMP-free-plan data...");
+    void runLocalStage1Ref.current?.();
+  }, [autoLocalScanRequested]);
 
   async function runExperimentalYahooFallback() {
     if (!(await ensureBackendOnline())) return;

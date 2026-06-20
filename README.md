@@ -529,6 +529,25 @@ Read:
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [Private GitHub setup](docs/GITHUB_SETUP.md)
 
+### One-Click Investment Lab Launch
+
+Recommended Windows workflow:
+
+```powershell
+start-investment-lab.bat
+```
+
+This launcher:
+
+- starts the FastAPI backend on `http://127.0.0.1:8000`
+- starts the Next.js frontend on `http://localhost:3000`
+- creates `backend\.venv` and installs backend requirements if the virtual environment is missing
+- waits for `/health` and `/investment-lab`
+- opens `http://localhost:3000/investment-lab?autoscan=local`
+- automatically runs the free/local Stage 1 Investment Lab scan
+
+The default `start-fabio-lab.bat` delegates to the same one-click Investment Lab launcher. FMP deep scan still requires Preview and Confirm because it can spend quota.
+
 ### Start Frontend
 
 ```powershell
