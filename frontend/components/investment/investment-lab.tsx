@@ -80,6 +80,7 @@ import {
   type StockRecord,
   type WatchlistItem
 } from "@/lib/investment-engine";
+import { fmpSingleSymbolEndpoint, stage1FmpTickers } from "@/lib/investment-scanner";
 
 const SECTORS = [
   "Technology",
@@ -1294,6 +1295,8 @@ class FmpRequestError extends Error {
   }
 }
 
+class FmpQuotaError extends Error {}
+
 function storeFmpFailure(
   cache: InvestmentCache,
   cacheKey: string,
@@ -1342,7 +1345,7 @@ async function fmpFetch(endpoint: FmpEndpoint, apiKey: string, cache: Investment
     if (cached && usableCachedData) {
       return { data: cached.data, cache: normalizedCache, fromCache: true, attempted: false, attemptResult: "cache" as const, timestamp: `${cached.date}T00:00:00.000Z` };
     }
-    throw new Error("FMP safe remaining calls reached zero. Reconcile the official dashboard usage before continuing.");
+    throw new FmpQuotaError("FMP safe remaining calls reached zero. Reconcile the official dashboard usage before continuing.");
   }
   let attemptedCache: InvestmentCache = recordFmpAttempt(normalizedCache);
   let response: Response;
@@ -1480,14 +1483,6 @@ function fmpStockRow(item: Record<string, unknown>, source: InvestmentDataSource
   return row;
 }
 
-function chunkValues<T>(items: T[], size: number) {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-  return chunks;
-}
-
 function fmpHistoricalRow(ticker: string, value: unknown, source: InvestmentDataSource = "FMP historical EOD") {
   const metrics = historicalMetrics(value);
   if (metrics.current_price === null && metrics.drawdown_52w_pct === null && metrics.volatility_pct === null) return null;
@@ -1550,6 +1545,10 @@ async function fetchFmpStage1(
         timestamp: response.timestamp
       };
     } catch (error) {
+      if (error instanceof FmpQuotaError) {
+        usedAvailableOnly = true;
+        return null;
+      }
       const message = error instanceof Error ? maskFmpText(error.message, apiKey) : "FMP endpoint failed.";
       const result: FmpCapabilityResult = {
         ...capability,
@@ -1572,9 +1571,10 @@ async function fetchFmpStage1(
     };
   };
   const localTickers = [...new Set(tickers)].filter(Boolean);
+  const stage1Tickers = stage1FmpTickers(localTickers);
 
-  for (const chunk of chunkValues(localTickers, 25)) {
-    const profileResult = await pull("profile", { path: "profile", params: { symbol: chunk.join(",") } });
+  for (const ticker of stage1Tickers) {
+    const profileResult = await pull("profile", fmpSingleSymbolEndpoint("profile", ticker));
     for (const row of profileResult.rows) {
       const parsed = fmpStockRow(row, profileResult.source, profileResult.timestamp);
       if (!parsed?.ticker) continue;
@@ -1583,8 +1583,8 @@ async function fetchFmpStage1(
   }
 
   if (capabilities.quote.status === "available") {
-    for (const chunk of chunkValues(localTickers, 25)) {
-      const quoteResult = await pull("quote", { path: "quote", params: { symbol: chunk.join(",") } });
+    for (const ticker of stage1Tickers) {
+      const quoteResult = await pull("quote", fmpSingleSymbolEndpoint("quote", ticker));
       for (const row of quoteResult.rows) {
         const parsed = fmpStockRow(row, quoteResult.source, quoteResult.timestamp);
         if (!parsed?.ticker) continue;
@@ -1593,8 +1593,8 @@ async function fetchFmpStage1(
     }
   } else if (capabilities.historical.status === "available") {
     usedAvailableOnly = true;
-    for (const ticker of localTickers.slice(0, 120)) {
-      const historical = await pullRaw("historical", { path: "historical-price-eod/full", params: { symbol: ticker } });
+    for (const ticker of stage1Tickers) {
+      const historical = await pullRaw("historical", fmpSingleSymbolEndpoint("historical-price-eod/full", ticker));
       const parsed = fmpHistoricalRow(ticker, historical?.data, historical?.source);
       if (parsed?.ticker) rowsByTicker.set(parsed.ticker, mergePartialStock(rowsByTicker.get(parsed.ticker), parsed));
     }
@@ -2016,12 +2016,12 @@ function averageFcf(rows: FcfHistoryRow[], years: number) {
 }
 
 function fmpEndpointForTicker(capabilityId: FmpCapabilityId, ticker: string): FmpEndpoint {
-  if (capabilityId === "quote") return { path: "quote", params: { symbol: ticker } };
-  if (capabilityId === "profile") return { path: "profile", params: { symbol: ticker } };
-  if (capabilityId === "ratios") return { path: "ratios-ttm", params: { symbol: ticker } };
-  if (capabilityId === "income") return { path: "income-statement", params: { symbol: ticker } };
-  if (capabilityId === "cashFlow") return { path: "cash-flow-statement", params: { symbol: ticker } };
-  return { path: "historical-price-eod/full", params: { symbol: ticker } };
+  if (capabilityId === "quote") return fmpSingleSymbolEndpoint("quote", ticker);
+  if (capabilityId === "profile") return fmpSingleSymbolEndpoint("profile", ticker);
+  if (capabilityId === "ratios") return fmpSingleSymbolEndpoint("ratios-ttm", ticker);
+  if (capabilityId === "income") return fmpSingleSymbolEndpoint("income-statement", ticker);
+  if (capabilityId === "cashFlow") return fmpSingleSymbolEndpoint("cash-flow-statement", ticker);
+  return fmpSingleSymbolEndpoint("historical-price-eod/full", ticker);
 }
 
 function cachedFmpEntry(cache: InvestmentCache, capabilityId: FmpCapabilityId, ticker: string) {
@@ -3604,6 +3604,10 @@ export function InvestmentLab() {
             attemptResult: response.attemptResult
           };
         } catch (error) {
+          if (error instanceof FmpQuotaError) {
+            quotaStopped = true;
+            return null;
+          }
           const message = error instanceof Error ? maskFmpText(error.message, allocation.fmp_api_key) : "FMP endpoint failed.";
           const attempted = error instanceof FmpRequestError && error.status === 402 && getCache().fmpPremiumBlocked?.[capabilityId]
             ? 1
