@@ -3105,7 +3105,7 @@ export function InvestmentLab() {
   const [busy, setBusy] = useState(false);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [autoLocalScanRequested, setAutoLocalScanRequested] = useState(false);
-  const runLocalStage1Ref = useRef<(() => Promise<void>) | null>(null);
+  const runLocalStage1Ref = useRef<(() => Promise<StockRecord[]>) | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -3240,6 +3240,22 @@ export function InvestmentLab() {
   const bestPriorityModeRoi = modeRoiRows[0] ?? null;
   const worstPriorityModeRoi = modeRoiRows.length ? modeRoiRows[modeRoiRows.length - 1] : null;
   const lifetimeScanRoi = scanRoiSummary(scanRoiHistory);
+  const analyzeRowsForCache = (stockRows: StockRecord[], cache: InvestmentCache) => {
+    const normalizedByTicker = new Map(
+      stockRows.map((stock) => [
+        stock.ticker.toUpperCase(),
+        averageFcf(combinedCashFlowHistoryForTicker(cache, stock.ticker), 3)
+      ])
+    );
+    return stockRows
+      .map((stock) => analyzeStock(stock, portfolio, assumptions, {
+        normalizedFcf3y: normalizedByTicker.get(stock.ticker.toUpperCase()) ?? null,
+        scenarioProbabilities
+      }))
+      .sort((a, b) => b.totalScore - a.totalScore);
+  };
+  const coverageRowsForCache = (stockRows: StockRecord[], cache: InvestmentCache) =>
+    coverageRowsFor(analyzeRowsForCache(stockRows, cache), cache, watchlist, scanPrioritySettings);
 
   function saveStocks(next: StockRecord[]) {
     setStocks(next);
@@ -3443,6 +3459,7 @@ export function InvestmentLab() {
       setCacheInfo(finalCache);
       setFmpCapabilities(capabilitiesFromCache(finalCache));
       setStatus(statusText);
+      return next;
     } catch (error) {
       const next = mergeStockRows(stocks, localUniverseRows(stocks));
       saveStocks(next);
@@ -3450,6 +3467,7 @@ export function InvestmentLab() {
       setCacheInfo(finalCache);
       setFmpCapabilities(capabilitiesFromCache(finalCache));
       setStatus(error instanceof Error ? `Loaded local universe, but FMP Stage 1 failed. ${error.message}` : "Loaded local universe, but FMP Stage 1 failed.");
+      return next;
     } finally {
       setBusy(false);
     }
@@ -3585,7 +3603,13 @@ export function InvestmentLab() {
     await runCoverageBatch(refreshed.batchSize, refreshed.selectedSymbols, refreshed);
   }
 
-  async function runCoverageBatch(batchSize: number, selectedSymbols?: string[], scanPreview?: CoverageScanPreview) {
+  async function runCoverageBatch(
+    batchSize: number,
+    selectedSymbols?: string[],
+    scanPreview?: CoverageScanPreview,
+    coverageRowsOverride = coverageRows,
+    stockBase = stocks
+  ) {
     if (!allocation.fmp_api_key.trim()) {
       setStatus(t.noKey);
       return;
@@ -3597,9 +3621,9 @@ export function InvestmentLab() {
     setBusy(true);
     const roiBeforeCache = normalizeFmpDailyUsage(getCache());
     const roiBeforeStats = roiBeforeCache.fmpAttemptStats ?? defaultFmpAttemptStats();
-    const validBefore = validScenarioTickerSet(stocks, roiBeforeCache, portfolio, assumptions, effectiveScenarioProbabilities);
+    const validBefore = validScenarioTickerSet(stockBase, roiBeforeCache, portfolio, assumptions, effectiveScenarioProbabilities);
     let cacheState: InvestmentCache = roiBeforeCache;
-    let updated = [...stocks];
+    let updated = [...stockBase];
     let calls = 0;
     let usedAvailableOnly = false;
     const scannedSymbols: string[] = [];
@@ -3608,9 +3632,9 @@ export function InvestmentLab() {
     try {
       const selectedCoverageRows = selectedSymbols !== undefined
         ? selectedSymbols
-          .map((ticker) => coverageRows.find((row) => row.analysis.stock.ticker === ticker))
+          .map((ticker) => coverageRowsOverride.find((row) => row.analysis.stock.ticker === ticker))
           .filter((row): row is CoverageRow => Boolean(row))
-        : coverageRows.filter((row) => row.scannable).slice(0, batchSize);
+        : coverageRowsOverride.filter((row) => row.scannable).slice(0, batchSize);
       const requiredCapabilityIds = new Set(
         selectedCoverageRows.flatMap((row) => row.endpointIds)
       );
@@ -3808,34 +3832,100 @@ export function InvestmentLab() {
     }
   }
 
+  async function runAutoCompleteAvailableData() {
+    setStatus("Auto data completion started: local universe, SEC FCF fallback, then safe FMP Make Valid scan.");
+    const stage1Stocks = await runLocalStage1();
+    const afterStage1Cache = getCache();
+    const stage1Coverage = coverageRowsForCache(stage1Stocks, afterStage1Cache);
+    const secTickers = stage1Coverage
+      .filter((row) =>
+        (row.reasons.includes("missing FCF") || row.reasons.includes("missing 3-year FCF history"))
+        && !row.secFcfAvailable
+      )
+      .slice(0, 25)
+      .map((row) => row.analysis.stock.ticker);
+    const afterSecStocks = secTickers.length
+      ? await runSecCoverageBatch(secTickers.length, secTickers, false, stage1Stocks)
+      : stage1Stocks;
+    const latestCache = normalizeFmpDailyUsage(getCache());
+    const latestCoverageRows = coverageRowsForCache(afterSecStocks, latestCache);
+    const fmpPreview = buildCoverageScanPreview(
+      latestCoverageRows,
+      50,
+      latestCache,
+      capabilitiesFromCache(latestCache),
+      scanPrioritySettings
+    );
+    setCoverageScanPreview(fmpPreview);
+
+    if (!allocation.fmp_api_key.trim()) {
+      setStatus(
+        `Auto data completion finished local + SEC steps. Add an FMP key to fill profile, price, ratios, income, and historical fields. `
+        + `${secTickers.length} SEC FCF candidate${secTickers.length === 1 ? "" : "s"} checked.`
+      );
+      return;
+    }
+    if (!fmpPreview.selectedSymbols.length) {
+      setStatus(
+        `Auto data completion finished. No FMP-scannable symbols are currently queued. `
+        + `Open Data Coverage to review blocked endpoints, manual fixes, or already-complete records.`
+      );
+      return;
+    }
+    if (!fmpPreview.isSafe) {
+      setStatus(
+        `Auto data completion paused before FMP scan. Estimated ${fmpPreview.estimatedCalls} calls exceeds safe remaining ${fmpPreview.safeRemaining}. `
+        + "Update quota reconciliation or run a smaller preview."
+      );
+      return;
+    }
+    await runCoverageBatch(50, fmpPreview.selectedSymbols, fmpPreview, latestCoverageRows, afterSecStocks);
+    setStatus((current) =>
+      `${current} Auto completion used every currently available safe source. Some stocks may still be incomplete if data is unavailable, premium-blocked, or requires manual input.`
+    );
+  }
+
   function runFmpScan() {
     previewCoverageBatch(50);
   }
 
-  async function runSecCoverageBatch(limit: number, selectedTickers?: string[], forceRefresh = false) {
+  async function runSecCoverageBatch(limit: number, selectedTickers?: string[], forceRefresh = false, stockBase = stocks) {
     if (!(await ensureBackendOnline())) {
       setStatus("Backend is offline. Start backend before running SEC EDGAR FCF fallback.");
-      return;
+      return stockBase;
     }
+    const cacheForSelection = getCache();
+    const baseCoverageRows = selectedTickers?.length
+      ? secCoverageRows
+      : coverageRowsForCache(stockBase, cacheForSelection)
+        .filter((row) =>
+          (row.reasons.includes("missing FCF") || row.reasons.includes("missing 3-year FCF history"))
+          && !row.secFcfAvailable
+        )
+        .sort((left, right) =>
+          right.analysis.realDataPercent - left.analysis.realDataPercent
+          || left.reasons.length - right.reasons.length
+          || right.analysis.stock.market_cap - left.analysis.stock.market_cap
+        );
     const requested = selectedTickers?.length
       ? selectedTickers.map((ticker) => ticker.toUpperCase())
-      : secCoverageRows
-        .filter((row) => forceRefresh || secCashFlowEntry(cacheInfo, row.analysis.stock.ticker)?.date !== todayKey())
+      : baseCoverageRows
+        .filter((row) => forceRefresh || secCashFlowEntry(cacheForSelection, row.analysis.stock.ticker)?.date !== todayKey())
         .slice(0, limit)
         .map((row) => row.analysis.stock.ticker);
     if (!requested.length) {
       setStatus("No SEC FCF candidates need a new request today. Cached SEC results remain available.");
-      return;
+      return stockBase;
     }
 
     setBusy(true);
     const beforeCache = getCache();
-    const validBefore = validScenarioTickerSet(stocks, beforeCache, portfolio, assumptions, effectiveScenarioProbabilities);
+    const validBefore = validScenarioTickerSet(stockBase, beforeCache, portfolio, assumptions, effectiveScenarioProbabilities);
     try {
       const response = await fetchSecCashFlowBatch(requested, beforeCache, forceRefresh);
       let nextCache = storeSecResponse(beforeCache, response);
       const resultByTicker = new Map(response.results.map((result) => [result.ticker.toUpperCase(), result]));
-      const updated = stocks.map((stock) => {
+      const updated = stockBase.map((stock) => {
         const result = resultByTicker.get(stock.ticker.toUpperCase());
         return result ? applySecCashFlow(stock, result) : stock;
       });
@@ -3875,8 +3965,10 @@ export function InvestmentLab() {
         + (response.local_cache_fallback ? " Backend request failed; local SEC cache was used." : "")
         + (missingSymbols.length ? ` Missing or ambiguous: ${missingSymbols.join(", ")}.` : "")
       );
+      return updated;
     } catch (error) {
       setStatus(error instanceof Error ? `SEC EDGAR FCF fallback failed. ${error.message}` : "SEC EDGAR FCF fallback failed.");
+      return stockBase;
     } finally {
       setBusy(false);
     }
@@ -4326,10 +4418,19 @@ export function InvestmentLab() {
                   ? `Optional backend online for Yahoo fallback: ${API_BASE}`
                   : BACKEND_OFFLINE_MESSAGE}
             </div>
-            <Button type="button" variant="primary" onClick={runLocalStage1} disabled={busy}>
+            <Button type="button" variant="primary" onClick={() => void runLocalStage1()} disabled={busy}>
               <RefreshCcw className="h-4 w-4" />
               {t.runYahoo}
             </Button>
+            <Button type="button" variant="primary" onClick={() => void runAutoCompleteAvailableData()} disabled={busy}>
+              <DownloadCloud className="h-4 w-4" />
+              One-Click Data Completion / 一键补全数据
+            </Button>
+            <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">
+              Runs local universe, SEC FCF fallback, and a safe FMP Make Valid batch in one flow. It cannot bypass
+              premium-blocked endpoints or missing company disclosures; remaining gaps stay visible in Data Coverage.
+              一键运行本地股票池、SEC FCF 备用数据和安全 FMP 补全扫描；如果接口被套餐限制或公司没有披露数据，系统会保留缺口原因。
+            </div>
             <Field label="FMP API Key / FMP 密钥">
               <Input type="password" value={allocation.fmp_api_key} onChange={(event) => saveAllocation({ ...allocation, fmp_api_key: event.target.value })} placeholder="Optional" />
             </Field>
