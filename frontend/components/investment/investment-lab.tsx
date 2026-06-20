@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -18,6 +18,7 @@ import {
   SlidersHorizontal,
   Trash2,
   TrendingUp,
+  UploadCloud,
   WalletCards
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -80,7 +81,15 @@ import {
   type StockRecord,
   type WatchlistItem
 } from "@/lib/investment-engine";
-import { fmpSingleSymbolEndpoint, stage1FmpTickers } from "@/lib/investment-scanner";
+import {
+  createLocalBackup,
+  downloadLocalBackup,
+  parseLocalBackupJson,
+  restoreLocalBackup,
+  summarizeLocalBackup,
+  type LocalDataBackup
+} from "@/lib/local-backup";
+import { STAGE1_FMP_SYMBOL_LIMIT, fmpSingleSymbolEndpoint, stage1FmpTickers } from "@/lib/investment-scanner";
 
 const SECTORS = [
   "Technology",
@@ -4036,6 +4045,24 @@ export function InvestmentLab() {
         lifetime={lifetimeScanRoi}
         permanentlyBlockedEndpointIds={permanentlyBlockedEndpointIds}
       />
+      <InvestmentScannerDiagnostics
+        stockCount={stocks.length}
+        broadScanCount={broadScan.length}
+        coverageRows={coverageRows}
+        validScenarioCount={validScenarioCount}
+        backendOnline={backendOnline}
+        hasApiKey={Boolean(allocation.fmp_api_key.trim())}
+        remainingQuota={remainingFmpQuota}
+        officialUsed={officialFmpUsed}
+        officialLimit={officialFmpLimit}
+        capabilities={fmpCapabilities}
+        attemptStats={fmpAttemptStats}
+        cacheAudit={fmpCacheAudit}
+        preview={coverageScanPreview}
+        lastBatch={lastScanRoiBatch}
+        status={status}
+        fmpTestStatus={fmpTestStatus}
+      />
       <DataCoverageManager
         view="scanner"
         totalStocks={analyses.length}
@@ -4269,6 +4296,7 @@ export function InvestmentLab() {
       </div> : null}
 
       {activeTab === "diagnostics" ? <>
+        <LocalDataBackupPanel />
         <FmpFieldMappingAudit stocks={stocks} />
         <FmpMappingRepairComparison rows={mappingComparisons} />
         <FmpRawResponseInspector stocks={stocks} cache={cacheInfo} />
@@ -4434,6 +4462,211 @@ function OverviewList({
         <EmptyState title="No results yet" description={empty} />
       )}
     </div>
+  );
+}
+
+function InvestmentScannerDiagnostics({
+  stockCount,
+  broadScanCount,
+  coverageRows,
+  validScenarioCount,
+  backendOnline,
+  hasApiKey,
+  remainingQuota,
+  officialUsed,
+  officialLimit,
+  capabilities,
+  attemptStats,
+  cacheAudit,
+  preview,
+  lastBatch,
+  status,
+  fmpTestStatus
+}: {
+  stockCount: number;
+  broadScanCount: number;
+  coverageRows: CoverageRow[];
+  validScenarioCount: number;
+  backendOnline: boolean | null;
+  hasApiKey: boolean;
+  remainingQuota: number;
+  officialUsed: number;
+  officialLimit: number;
+  capabilities: Record<FmpCapabilityId, FmpCapabilityResult>;
+  attemptStats: FmpAttemptStats;
+  cacheAudit: FmpCacheAuditRow[];
+  preview: CoverageScanPreview | null;
+  lastBatch: ScanRoiBatch | null;
+  status: string;
+  fmpTestStatus: string;
+}) {
+  const capabilityRows = FMP_CAPABILITY_DEFINITIONS.map((definition) => capabilities[definition.id]);
+  const availableEndpoints = capabilityRows.filter((capability) => capability.status === "available").length;
+  const blockedEndpoints = capabilityRows.filter((capability) => capability.status === "premium blocked").length;
+  const untestedEndpoints = capabilityRows.filter((capability) => capability.status === "untested").length;
+  const repairableCaches = cacheAudit.filter((row) => row.category === "empty cache" || row.category === "failed cache");
+  const unknownEndpointRows = coverageRows.filter((row) =>
+    row.endpointNeeds.some((endpoint) => endpoint.status === "unknown")
+  ).length;
+  const blockedOnlyRows = coverageRows.filter((row) => row.blockedFromValidity).length;
+  const secReadyRows = coverageRows.filter((row) => row.secFcfAvailable && row.scannable).length;
+  const totalAttempts = attemptStats.success
+    + attemptStats.premiumBlocked
+    + attemptStats.unauthorized
+    + attemptStats.rateLimited
+    + attemptStats.networkErrors
+    + attemptStats.otherErrors;
+  const likelyBlocker = !stockCount
+    ? "Load the local stock universe first."
+    : !hasApiKey
+      ? "No FMP key is saved, so the app can only use local/manual data."
+      : remainingQuota <= 0
+        ? "Safe FMP remaining calls are zero. Reconcile official FMP usage before scanning."
+        : repairableCaches.length
+          ? "Empty or failed FMP cache entries should be repaired before the next scan."
+          : blockedOnlyRows
+            ? "Some stocks only need endpoints that are blocked by the current FMP plan."
+            : unknownEndpointRows
+              ? "Run the FMP capability test so preview estimates can avoid unknown endpoints."
+              : "Scanner prerequisites look ready for preview-first scanning.";
+
+  return (
+    <CollapsibleCard
+      title="Scanner Diagnostics"
+      badge={<Badge>{repairableCaches.length ? `${repairableCaches.length} cache issue${repairableCaches.length === 1 ? "" : "s"}` : "Ready check"}</Badge>}
+      defaultOpen
+      contentClassName="grid gap-4"
+    >
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <ValueBox label="Loaded Stocks" value={`${stockCount}`} />
+        <ValueBox label="Stage 1 Candidates" value={`${broadScanCount}`} />
+        <ValueBox label="Scenario Valid" value={`${validScenarioCount}`} />
+        <ValueBox label="Stage 1 FMP Limit" value={`${STAGE1_FMP_SYMBOL_LIMIT}`} />
+        <ValueBox label="Safe FMP Calls" value={`${remainingQuota}`} />
+        <ValueBox label="Official Usage" value={`${officialUsed} / ${officialLimit}`} />
+        <ValueBox label="Endpoint Attempts" value={`${totalAttempts}`} />
+        <ValueBox label="SEC-FCF Scannable" value={`${secReadyRows}`} />
+      </div>
+
+      <div className="grid min-w-0 gap-3 lg:grid-cols-2">
+        <div className="rounded-lg border border-stroke bg-canvas p-3">
+          <div className="text-sm font-semibold text-ink">Current Blocker</div>
+          <div className="mt-2 text-sm leading-6 text-muted">{likelyBlocker}</div>
+          <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Backend: {backendOnline === null ? "Checking" : backendOnline ? "Online" : "Offline"}</div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">FMP Key: {hasApiKey ? "Saved locally" : "Missing"}</div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Preview: {preview ? `${preview.selectedSymbols.length} symbols / ${preview.estimatedCalls} calls` : "Not created"}</div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Last Batch: {lastBatch ? `${lastBatch.newValidStocksGained} new valid / ${lastBatch.actualCallsUsed} calls` : "None"}</div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-stroke bg-canvas p-3">
+          <div className="text-sm font-semibold text-ink">Endpoint Health</div>
+          <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Available: <span className="font-medium text-ink">{availableEndpoints}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Premium Blocked: <span className="font-medium text-ink">{blockedEndpoints}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Untested: <span className="font-medium text-ink">{untestedEndpoints}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Repairable Cache: <span className="font-medium text-ink">{repairableCaches.length}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Success: <span className="font-medium text-ink">{attemptStats.success}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Rate Limited: <span className="font-medium text-ink">{attemptStats.rateLimited}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Unauthorized: <span className="font-medium text-ink">{attemptStats.unauthorized}</span></div>
+            <div className="rounded-md border border-stroke bg-panel px-3 py-2">Network/Error: <span className="font-medium text-ink">{attemptStats.networkErrors + attemptStats.otherErrors}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">
+        <span className="font-medium text-ink">Last status:</span> {status || "--"}
+        {fmpTestStatus ? <span className="ml-2"><span className="font-medium text-ink">Capability test:</span> {fmpTestStatus}</span> : null}
+      </div>
+    </CollapsibleCard>
+  );
+}
+
+function LocalDataBackupPanel() {
+  const [summary, setSummary] = useState<ReturnType<typeof summarizeLocalBackup> | null>(null);
+  const [lastBackup, setLastBackup] = useState<LocalDataBackup | null>(null);
+  const [message, setMessage] = useState("Create a local JSON backup before large imports, cache repairs, or scan batches.");
+
+  const refreshSummary = () => {
+    if (typeof window === "undefined") return;
+    setSummary(summarizeLocalBackup(createLocalBackup(window.localStorage)));
+  };
+
+  useEffect(() => {
+    refreshSummary();
+  }, []);
+
+  const exportBackup = () => {
+    if (typeof window === "undefined") return;
+    const backup = createLocalBackup(window.localStorage);
+    const nextSummary = summarizeLocalBackup(backup);
+    setLastBackup(backup);
+    setSummary(nextSummary);
+    downloadLocalBackup(backup);
+    setMessage(`Exported ${nextSummary.includedKeys} local data keys. Store the file privately because it may include your saved FMP key.`);
+  };
+
+  const importBackup = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || typeof window === "undefined") return;
+    try {
+      const backup = parseLocalBackupJson(await file.text());
+      const result = restoreLocalBackup(backup, window.localStorage);
+      const nextSummary = summarizeLocalBackup(backup);
+      setLastBackup(backup);
+      setSummary(nextSummary);
+      setMessage(`Restored ${result.restoredCount} keys. Refresh the page to reload restored local data. Skipped unknown keys: ${result.skippedUnknownKeys.length}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Backup restore failed.");
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  return (
+    <CollapsibleCard
+      title="Local Data Backup"
+      badge={<Badge>{summary ? `${summary.includedKeys} keys found` : "LocalStorage"}</Badge>}
+      defaultOpen={false}
+      contentClassName="grid gap-4"
+    >
+      <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">
+        Export and restore known Fabio Edge localStorage data only. Backups can include trade records, Investment Lab cache, SEC/FMP cache, scan ROI history, watchlists, portfolio data, preferences, and the locally saved FMP key if one exists.
+      </div>
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <ValueBox label="Known Backup Keys" value={`${summary?.totalKnownKeys ?? "--"}`} />
+        <ValueBox label="Keys Present Locally" value={`${summary?.includedKeys ?? "--"}`} />
+        <ValueBox label="Sensitive Keys" value={`${summary?.sensitiveKeys ?? "--"}`} />
+        <ValueBox label="Last Backup Date" value={lastBackup ? formatDateTime(lastBackup.exported_at) : "--"} />
+      </div>
+      {summary?.groups ? (
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {Object.entries(summary.groups).map(([group, count]) => (
+            <div key={group} className="flex items-center justify-between gap-3 rounded-md border border-stroke bg-canvas px-3 py-2 text-sm">
+              <span className="text-muted">{group}</span>
+              <span className="font-medium text-ink">{count}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="primary" onClick={exportBackup}>
+          <DownloadCloud className="h-4 w-4" />
+          Export Local Backup
+        </Button>
+        <label className="focus-ring inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border border-stroke bg-panel px-3 text-sm font-medium text-ink transition hover:border-accent/40 hover:bg-canvas">
+          <UploadCloud className="h-4 w-4" />
+          Restore Backup
+          <input type="file" accept="application/json,.json" className="sr-only" onChange={(event) => void importBackup(event)} />
+        </label>
+        <Button type="button" variant="ghost" onClick={refreshSummary}>
+          <RefreshCcw className="h-4 w-4" />
+          Refresh Summary
+        </Button>
+      </div>
+      <div className="rounded-lg border border-stroke bg-canvas px-3 py-2 text-sm leading-6 text-muted">{message}</div>
+    </CollapsibleCard>
   );
 }
 

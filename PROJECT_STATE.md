@@ -126,6 +126,12 @@ See [PROJECT_GOAL.md](PROJECT_GOAL.md) for the product charter and
   upside/downside, risk/reward, and missing-data reasons.
 - Scan ROI records calls, endpoint outcomes, data gained, and newly valid stocks.
 - Diagnostic panels expose raw and mapped data without changing scoring logic.
+- Scanner Diagnostics summarizes local universe state, FMP key presence, safe
+  quota, endpoint health, bad cache counts, preview status, and likely scan
+  blockers before spending calls.
+- Local Data Backup in Investment Lab diagnostics exports and restores known
+  browser localStorage keys for trades, Investment Lab cache/settings, Market
+  Lab validation data, freedom goals, checklist state, and preferences.
 
 Counts of cached or scenario-valid stocks are browser-profile and date
 dependent. They are runtime observations, not a stable repository capability.
@@ -142,6 +148,9 @@ dependent. They are runtime observations, not a stable repository capability.
 
 - LocalStorage, API quota state, SEC cache, watchlists, and portfolio data are
   not shared automatically between browsers or collaborators.
+- Local Data Backup is a manual JSON export/import workflow. It is not cloud
+  sync and backup files may contain locally saved FMP keys or user research
+  data, so they must be stored privately.
 - FMP coverage depends on subscription capabilities, quota, and endpoint
   availability.
 - SEC XBRL concepts can be missing or ambiguous for some issuers.

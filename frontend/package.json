@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "npm run test:broker-import",
-    "test:broker-import": "node --no-warnings --experimental-strip-types --test tests/broker-import.test.mjs tests/import-review.test.mjs tests/investment-scanner.test.mjs"
+    "test:broker-import": "node --no-warnings --experimental-strip-types --test tests/broker-import.test.mjs tests/import-review.test.mjs tests/investment-scanner.test.mjs tests/local-backup.test.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

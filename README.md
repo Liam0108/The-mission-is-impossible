@@ -301,6 +301,22 @@ Free Cash Flow = Operating Cash Flow - absolute(CapEx)
 
 Use **SEC EDGAR FCF Coverage Manager** in `/investment-lab` to fetch the next 10 or 25 candidates. This workflow does not use FMP calls. The SEC Raw Inspector shows the CIK, selected XBRL concepts, fiscal periods, sign normalization, and calculated annual FCF values.
 
+### Investment Lab scanner diagnostics and local backup
+
+Investment Lab includes a **Scanner Diagnostics** panel in the Stock Scanner tab. Use it before spending FMP quota. It shows:
+
+- whether the local universe has loaded
+- whether an FMP key is saved locally
+- safe FMP calls remaining after quota reconciliation
+- endpoint capability health
+- empty or failed cache entries that should be repaired
+- scan preview status and last batch ROI
+- the most likely blocker when scanning does not produce valid stocks
+
+The Diagnostics tab includes **Local Data Backup**. It exports a JSON backup of known Fabio Edge browser localStorage keys, including trade records, Investment Lab cache/settings, SEC/FMP cache, scan ROI history, watchlists, portfolio data, Market Lab validation feedback, freedom goals, checklist state, and preferences.
+
+This is manual backup/restore only, not cloud synchronization. Backup files can include user research data and the locally saved FMP key if one exists, so store them privately and never commit them.
+
 In a second terminal:
 
 ```bash
