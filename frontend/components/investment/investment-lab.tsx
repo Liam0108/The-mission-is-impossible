@@ -2331,8 +2331,9 @@ function coverageRowsFor(
         missingFcf
         && (row.secFcfStatus === "missing" || row.secFcfStatus === "error");
       const blockedFromValidity = hardBlockedNeeds.length > 0 || fcfUnavailableAfterSec;
+      const fcfCoverageAvailable = row.hybridChecklist.fcf.available;
       const scannable =
-        row.secFcfAvailable
+        fcfCoverageAvailable
         && !blockedFromValidity
         && estimatedAvailableCalls > 0;
       const completionCriticalMissing = [
@@ -2356,6 +2357,8 @@ function coverageRowsFor(
             : `Cannot make valid automatically. Blocked or unresolved endpoint: ${hardBlockedNeeds.map((endpoint) => endpoint.id).join(", ")}.`
           : requiresSecFallback
             ? "FMP cashFlow is blocked. Run the free SEC EDGAR FCF fallback first."
+          : !fcfCoverageAvailable
+            ? "No FCF source is available yet. Run SEC EDGAR fallback or add FCF manually."
           : !scannable
             ? "No additional endpoint request is available today. Review cached data or use a manual fix."
             : unknownNeeds.length
@@ -2485,13 +2488,15 @@ function buildCoverageScanPreview(
   settings: ScanPrioritySettings
 ) {
   const selectedRows = coverageRows.filter((row) => row.scannable).slice(0, batchSize);
+  const displayRows = selectedRows.length ? selectedRows : coverageRows.slice(0, batchSize);
+  const selectedTickers = new Set(selectedRows.map((row) => row.analysis.stock.ticker));
   const selectedUnknownIds = new Set(
     selectedRows.flatMap((row) => row.endpointNeeds.filter((endpoint) => endpoint.status === "unknown").map((endpoint) => endpoint.id))
   );
   const capabilityTestIds = FMP_CAPABILITY_DEFINITIONS
     .filter((definition) => selectedUnknownIds.has(definition.id) && capabilities[definition.id].status === "untested")
     .map((definition) => definition.id);
-  const rows = selectedRows.map((row) => {
+  const rows = displayRows.map((row) => {
     const ticker = row.analysis.stock.ticker;
     const missingEndpoints = row.endpointIds.map((id) => {
       const capability = capabilities[id];
@@ -2527,7 +2532,9 @@ function buildCoverageScanPreview(
     const repairableCache = missingEndpoints.filter(
       (endpoint) => endpoint.status === "empty cache" || endpoint.status === "failed cache"
     );
-    const estimatedCalls = missingEndpoints.reduce((sum, endpoint) => sum + endpoint.estimatedCalls, 0);
+    const estimatedCalls = selectedTickers.has(ticker)
+      ? missingEndpoints.reduce((sum, endpoint) => sum + endpoint.estimatedCalls, 0)
+      : 0;
     const hardReasonCount = row.reasons.filter((reason) => reason !== "insufficient real data").length;
     let likelihood: CoverageScanLikelihood = row.estimatedChancePct >= 70 ? "High" : row.estimatedChancePct >= 30 ? "Medium" : "Low";
     let likelihoodReason = "Required endpoints are available, but several missing fields still need to map successfully.";
@@ -2562,7 +2569,9 @@ function buildCoverageScanPreview(
       likelihoodReason
     } satisfies CoverageScanPreviewRow;
   });
-  const endpointCalls = rows.reduce((sum, row) => sum + row.estimatedCalls, 0);
+  const endpointCalls = rows
+    .filter((row) => selectedTickers.has(row.ticker))
+    .reduce((sum, row) => sum + row.estimatedCalls, 0);
   const estimatedCalls = capabilityTestIds.length + endpointCalls;
   const safeRemaining = safeFmpRemaining(cache);
   const likelyRows = rows
@@ -2574,7 +2583,7 @@ function buildCoverageScanPreview(
   return {
     batchSize,
     priorityMode: settings.mode,
-    selectedSymbols: rows.map((row) => row.ticker),
+    selectedSymbols: selectedRows.map((row) => row.analysis.stock.ticker),
     rows,
     capabilityTestIds,
     estimatedCalls,
@@ -3892,8 +3901,18 @@ export function InvestmentLab() {
       return;
     }
     if (!fmpPreview.selectedSymbols.length) {
+      const blockedCount = latestCoverageRows.filter((row) => row.blockedFromValidity).length;
+      const missingFcfCount = latestCoverageRows.filter((row) => !row.hybridChecklist.fcf.available).length;
+      const noEndpointCount = latestCoverageRows.filter((row) =>
+        row.hybridChecklist.fcf.available
+        && !row.blockedFromValidity
+        && !row.estimatedAvailableCalls
+      ).length;
+      const diagnosticSummary = latestCoverageRows.length
+        ? ` Diagnosed ${latestCoverageRows.length} insufficient record${latestCoverageRows.length === 1 ? "" : "s"}: ${blockedCount} blocked, ${missingFcfCount} missing FCF source, ${noEndpointCount} already have no remaining requestable endpoint.`
+        : " No insufficient scenario records are currently queued; loaded stocks may already be analyzable or need different filters/manual review.";
       setStatus(
-        `Auto data completion finished. No FMP-scannable symbols are currently queued. `
+        `Auto data completion finished. No FMP-scannable symbols are currently queued.${diagnosticSummary} `
         + `Open Data Coverage to review blocked endpoints, manual fixes, or already-complete records.`
       );
       return;
