@@ -3510,7 +3510,12 @@ export function InvestmentLab() {
     setCacheInfo(cache);
     setCoverageScanPreview(preview);
     if (!preview.selectedSymbols.length) {
-      setStatus("No insufficient-data stocks are currently queued for a Make Valid scan.");
+      const reason = !stocks.length
+        ? "No stocks are loaded yet. Run Free/Local Stage 1 first."
+        : !coverageRows.length
+          ? "No insufficient-data stocks are currently queued. Review Data Coverage or load more data."
+          : "Insufficient-data stocks exist, but none are currently scannable with the current plan/cache state.";
+      setStatus(`Make Valid preview has 0 selected symbols. ${reason}`);
       return;
     }
     setStatus(
@@ -4105,6 +4110,8 @@ export function InvestmentLab() {
           setCoverageScanPreview(null);
           setStatus("Make Valid scan preview cancelled. No FMP requests were sent.");
         }}
+        onRunLocalStage1={() => void runLocalStage1()}
+        onOpenCoverage={() => changeActiveTab("coverage")}
         manualDrafts={coverageManualDrafts}
         onManualChange={updateCoverageManualDraft}
         onManualSave={saveCoverageManualFix}
@@ -4163,6 +4170,8 @@ export function InvestmentLab() {
           setCoverageScanPreview(null);
           setStatus("Make Valid scan preview cancelled. No FMP requests were sent.");
         }}
+        onRunLocalStage1={() => void runLocalStage1()}
+        onOpenCoverage={() => changeActiveTab("coverage")}
         manualDrafts={coverageManualDrafts}
         onManualChange={updateCoverageManualDraft}
         onManualSave={saveCoverageManualFix}
@@ -5257,6 +5266,8 @@ function DataCoverageManager({
   onPreview,
   onConfirm,
   onCancel,
+  onRunLocalStage1,
+  onOpenCoverage,
   manualDrafts,
   onManualChange,
   onManualSave,
@@ -5282,6 +5293,8 @@ function DataCoverageManager({
   onPreview: (size: number) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  onRunLocalStage1: () => void;
+  onOpenCoverage: () => void;
   manualDrafts: Record<string, CoverageManualDraft>;
   onManualChange: (ticker: string, field: CoverageManualField, value: number | null) => void;
   onManualSave: (stock: StockRecord) => void;
@@ -5306,6 +5319,13 @@ function DataCoverageManager({
   const repairableCacheRows = [...emptyCacheRows, ...failedCacheRows];
   const maxDistribution = Math.max(1, ...distribution.map((item) => item.count));
   const totalPriorityWeight = Object.values(prioritySettings.weights).reduce((sum, weight) => sum + weight, 0);
+  const emptyPreviewReason = !totalStocks
+    ? "No stocks are loaded yet. Run Free/Local Stage 1 first so the app has a universe to analyze."
+    : !coverageRows.length
+      ? "There are no insufficient-data stocks in the current local dataset. Load or import more data, or review existing records in Data Coverage."
+      : !scannableRows.length
+        ? "Insufficient stocks exist, but none can be scanned with the current FMP plan and cache state. Open Data Coverage to review blocked endpoints, SEC fallback, or manual fixes."
+        : "No symbols were selected for this batch. Try a smaller batch after refreshing the preview or review scan priority filters.";
   const hybridFieldLabel = (field: HybridFieldStatus) =>
     field.available ? `Yes · ${field.source}` : "No · --";
   const updateWeight = (key: keyof ScanPriorityWeights, value: number | null) => {
@@ -5631,6 +5651,27 @@ function DataCoverageManager({
           <div className="rounded-md border border-stroke bg-panel px-3 py-2 text-xs leading-5 text-muted">
             Most likely to become valid: {preview.likelyValidSymbols.join(", ") || "None in this batch. Review unavailable endpoints or use manual fixes."}
           </div>
+
+          {!preview.selectedSymbols.length ? (
+            <div className="grid gap-3 rounded-lg border border-caution/40 bg-caution/10 p-3 sm:p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" />
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-ink">No symbols are queued for this scan</div>
+                  <div className="mt-1 text-sm leading-6 text-muted">{emptyPreviewReason}</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="primary" onClick={onRunLocalStage1} disabled={busy}>
+                  <RefreshCcw className="h-4 w-4" />
+                  Run Free/Local Stage 1
+                </Button>
+                <Button type="button" variant="secondary" onClick={onOpenCoverage} disabled={busy}>
+                  Open Data Coverage
+                </Button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="overflow-x-auto rounded-lg border border-stroke">
             <table className="min-w-[1280px] w-full border-collapse text-left text-xs">
