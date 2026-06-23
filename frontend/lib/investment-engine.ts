@@ -490,7 +490,6 @@ export function scenarioProbabilitiesAreValid(probabilities: ScenarioProbabiliti
 export function missingData(stock: StockRecord) {
   const fields: Array<[keyof StockRecord, string]> = [
     ["current_price", "current price"],
-    ["target_buy_price", "target buy price"],
     ["market_cap", "market cap"],
     ["pe_ratio", "PE ratio"],
     ["revenue_growth_pct", "revenue growth"],
@@ -564,6 +563,35 @@ function derivedAudit(
 
 function isRealAuditSource(source: InvestmentDataSource) {
   return source !== "fallback" && source !== "missing";
+}
+
+function dcfInputAudit(stock: StockRecord, rawValue: number | string | null, affectedScore = true): InvestmentFieldAudit {
+  if (rawValue === null || typeof rawValue === "number" && !Number.isFinite(rawValue)) {
+    return { rawValue: null, source: "missing", timestamp: stock.last_updated || "", affectedScore };
+  }
+  const requiredAudits = [
+    inferredFieldAudit(stock, "free_cash_flow", stock.free_cash_flow, affectedScore),
+    inferredFieldAudit(stock, "current_price", stock.current_price, affectedScore)
+  ];
+  const hasDirectShares = stock.shares_outstanding !== null && Number.isFinite(stock.shares_outstanding) && stock.shares_outstanding > 0;
+  const shareAudits = hasDirectShares
+    ? [inferredFieldAudit(stock, "shares_outstanding", stock.shares_outstanding, affectedScore)]
+    : [
+        inferredFieldAudit(stock, "market_cap", stock.market_cap, affectedScore),
+        inferredFieldAudit(stock, "current_price", stock.current_price, affectedScore)
+      ];
+  const audits = [...requiredAudits, ...shareAudits];
+  const available = audits.filter((audit) => audit.source !== "missing" && audit.source !== "fallback");
+  if (available.length !== audits.length) {
+    return { rawValue, source: "fallback", timestamp: stock.last_updated || "", affectedScore };
+  }
+  const source = available.some((audit) => audit.source === "manual")
+    ? "manual"
+    : available.some((audit) => audit.source === "cache")
+      ? "cache"
+      : available[0].source;
+  const timestamp = available.map((audit) => audit.timestamp).filter(Boolean).sort().at(-1) ?? stock.last_updated ?? "";
+  return { rawValue, source, timestamp, affectedScore };
 }
 
 export function calculateDcfModel(
@@ -1121,7 +1149,7 @@ export function analyzeStock(
     { key: "revenueGrowth", label: "Revenue Growth", score: revenueGrowth, finalWeightPct: 8, ...inferredFieldAudit(stock, "revenue_growth_pct", stock.revenue_growth_pct) },
     { key: "fcfGrowth", label: "FCF Growth", score: fcfGrowth, finalWeightPct: 7.2, ...inferredFieldAudit(stock, "fcf_growth_pct", stock.fcf_growth_pct) },
     { key: "debt", label: "Debt", score: debt, finalWeightPct: 7.2, ...inferredFieldAudit(stock, "debt_to_equity", stock.debt_to_equity) },
-    { key: "dcfDiscount", label: "DCF Discount", score: dcfDiscount, finalWeightPct: 14, ...derivedAudit(stock, ["free_cash_flow", "shares_outstanding", "current_price"], val.dcfRelativeGapPct) },
+    { key: "dcfDiscount", label: "DCF Discount", score: dcfDiscount, finalWeightPct: 14, ...dcfInputAudit(stock, val.dcfRelativeGapPct) },
     { key: "peg", label: "PEG", score: peg, finalWeightPct: 10.5, ...derivedAudit(stock, ["pe_ratio", "revenue_growth_pct"], val.pegRatio) },
     { key: "peVsIndustry", label: "PE vs Industry", score: peVsIndustry, finalWeightPct: 10.5, ...derivedAudit(stock, ["pe_ratio"], stock.pe_ratio) },
     { key: "volatility", label: "Volatility", score: volatility, finalWeightPct: 8.5, ...inferredFieldAudit(stock, "volatility_pct", stock.volatility_pct) },

@@ -301,6 +301,22 @@ Free Cash Flow = Operating Cash Flow - absolute(CapEx)
 
 Use **SEC EDGAR FCF Coverage Manager** in `/investment-lab` to fetch the next 10 or 25 candidates. This workflow does not use FMP calls. The SEC Raw Inspector shows the CIK, selected XBRL concepts, fiscal periods, sign normalization, and calculated annual FCF values.
 
+### Investment Lab scanner diagnostics and local backup
+
+Investment Lab includes a **Scanner Diagnostics** panel in the Stock Scanner tab. Use it before spending FMP quota. It shows:
+
+- whether the local universe has loaded
+- whether an FMP key is saved locally
+- safe FMP calls remaining after quota reconciliation
+- endpoint capability health
+- empty or failed cache entries that should be repaired
+- scan preview status and last batch ROI
+- the most likely blocker when scanning does not produce valid stocks
+
+The Diagnostics tab includes **Local Data Backup**. It exports a JSON backup of known Fabio Edge browser localStorage keys, including trade records, Investment Lab cache/settings, SEC/FMP cache, scan ROI history, watchlists, portfolio data, Market Lab validation feedback, freedom goals, checklist state, and preferences.
+
+This is manual backup/restore only, not cloud synchronization. Backup files can include user research data and the locally saved FMP key if one exists, so store them privately and never commit them.
+
 In a second terminal:
 
 ```bash
@@ -512,6 +528,41 @@ Read:
 - [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [Private GitHub setup](docs/GITHUB_SETUP.md)
+
+### One-Click Investment Lab Launch
+
+Recommended Windows workflow:
+
+```powershell
+start-investment-lab.bat
+```
+
+This launcher:
+
+- starts the FastAPI backend on `http://127.0.0.1:8000`
+- starts the Next.js frontend on `http://localhost:3000`
+- checks that Next.js CSS assets load correctly; if stale `.next` cache causes CSS 404s, it restarts the frontend
+- creates `backend\.venv` and installs backend requirements if the virtual environment is missing
+- waits for `/health` and `/investment-lab`
+- opens `http://localhost:3000/investment-lab?autoscan=local`
+- automatically runs the free/local Stage 1 Investment Lab scan
+
+The default `start-fabio-lab.bat` delegates to the same one-click Investment Lab launcher. FMP deep scan still requires Preview and Confirm because it can spend quota.
+
+### Investment Lab Free Data Coverage
+
+Investment Lab uses free sources conservatively and keeps missing data visible instead of filling fake defaults.
+
+- SEC EDGAR XBRL is the main no-key fallback for company financial statements. It can fill FCF history, revenue growth, net margin, ROE, debt/equity, and shares outstanding when the issuer reports comparable XBRL facts.
+- The SEC Coverage Manager can run a full free SEC backfill in 25-symbol batches. This may take several minutes for hundreds of tickers because the app respects SEC rate limits and local caching.
+- FMP free-plan endpoints are used only when the user provides an FMP key and the endpoint is available under the current plan. Premium-blocked endpoints stay remembered and are not retried.
+- FMP historical EOD is still the preferred free-plan path for current price proxy, historical close, 52-week drawdown, and volatility when available.
+- Experimental Yahoo and public CSV sources are not treated as primary because browser/CORS/anti-bot restrictions can make them unreliable.
+- Generic web scraping is intentionally not used as a primary source. If a future adapter scrapes public pages, it must be marked low reliability, cached, source-audited, and must not overwrite higher-quality SEC, FMP, or manual data.
+- The Data Coverage Verification panel explains why a stock is below 100% real data, including missing fields, fallback/default score components, blocked endpoints, and the next best repair path.
+- Use **Re-audit All Stocks** after cache repair, SEC backfill, or FMP mapping fixes. It reapplies local FMP/SEC/manual cache to stored stock records and recalculates data coverage without making API calls.
+
+No free source can guarantee 100% coverage. If a company does not report a field, an endpoint is blocked by plan, or price history is unavailable, Data Coverage shows the exact missing reason and allows manual input.
 
 ### Start Frontend
 

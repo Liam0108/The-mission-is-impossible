@@ -44,6 +44,44 @@ CAPEX_CONCEPTS = (
     "PaymentsToAcquirePropertyPlantAndEquipment",
     "PaymentsToAcquireProductiveAssets",
 )
+REVENUE_CONCEPTS = (
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet",
+    "SalesRevenueGoodsNet",
+    "SalesRevenueServicesNet",
+)
+NET_INCOME_CONCEPTS = (
+    "NetIncomeLoss",
+    "ProfitLoss",
+    "NetIncomeLossAvailableToCommonStockholdersBasic",
+)
+EQUITY_CONCEPTS = (
+    "StockholdersEquity",
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+)
+TOTAL_DEBT_CONCEPTS = (
+    "DebtAndFinanceLeaseObligations",
+    "LongTermDebtAndFinanceLeaseObligations",
+    "LongTermDebt",
+)
+CURRENT_DEBT_CONCEPTS = (
+    "ShortTermBorrowings",
+    "ShortTermDebt",
+    "DebtCurrent",
+    "LongTermDebtCurrent",
+    "LongTermDebtAndFinanceLeaseObligationsCurrent",
+)
+NONCURRENT_DEBT_CONCEPTS = (
+    "LongTermDebtNoncurrent",
+    "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
+    "DebtNoncurrent",
+)
+SHARES_OUTSTANDING_CONCEPTS = (
+    "EntityCommonStockSharesOutstanding",
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingBasic",
+)
 ANNUAL_FORMS = {"10-K", "10-K/A"}
 
 _request_lock = threading.Lock()
@@ -152,19 +190,32 @@ def _annual_concept_values(
     us_gaap: dict[str, Any],
     concepts: tuple[str, ...],
 ) -> dict[str, dict[str, Any]]:
+    return _annual_concept_values_for_units(us_gaap, concepts, ("USD",))
+
+
+def _annual_concept_values_for_units(
+    taxonomy: dict[str, Any],
+    concepts: tuple[str, ...],
+    unit_names: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
     selected: dict[str, dict[str, Any]] = {}
     for concept in concepts:
-        concept_data = us_gaap.get(concept)
+        concept_data = taxonomy.get(concept)
         if not isinstance(concept_data, dict):
             continue
         units = concept_data.get("units")
         if not isinstance(units, dict):
             continue
-        usd_rows = units.get("USD")
-        if not isinstance(usd_rows, list):
+        unit_rows: list[Any] = []
+        for unit_name in unit_names:
+            rows = units.get(unit_name)
+            if isinstance(rows, list):
+                unit_rows = rows
+                break
+        if not unit_rows:
             continue
         concept_rows: dict[str, dict[str, Any]] = {}
-        for raw_item in usd_rows:
+        for raw_item in unit_rows:
             if not isinstance(raw_item, dict) or not _is_annual_fact(raw_item):
                 continue
             fiscal_year = _fiscal_year(raw_item)
@@ -177,6 +228,113 @@ def _annual_concept_values(
         for fiscal_year, item in concept_rows.items():
             selected.setdefault(fiscal_year, item)
     return selected
+
+
+def _latest_annual_row(
+    taxonomy: dict[str, Any],
+    concepts: tuple[str, ...],
+    unit_names: tuple[str, ...] = ("USD",),
+) -> dict[str, Any] | None:
+    values = _annual_concept_values_for_units(taxonomy, concepts, unit_names)
+    if not values:
+        return None
+    fiscal_year = max(values, key=_year_sort_key)
+    return values[fiscal_year]
+
+
+def _annual_rows_sorted(
+    taxonomy: dict[str, Any],
+    concepts: tuple[str, ...],
+    unit_names: tuple[str, ...] = ("USD",),
+) -> list[dict[str, Any]]:
+    values = _annual_concept_values_for_units(taxonomy, concepts, unit_names)
+    return [values[year] for year in sorted(values, key=_year_sort_key, reverse=True)]
+
+
+def _row_value(row: dict[str, Any] | None) -> float | None:
+    return _finite_number(row.get("val")) if row else None
+
+
+def _percent_change(current: float | None, prior: float | None) -> float | None:
+    if current is None or prior is None or prior == 0:
+        return None
+    return ((current - prior) / abs(prior)) * 100
+
+
+def _debt_value(us_gaap: dict[str, Any]) -> tuple[float | None, dict[str, str]]:
+    total_row = _latest_annual_row(us_gaap, TOTAL_DEBT_CONCEPTS)
+    total_value = _row_value(total_row)
+    if total_value is not None:
+        return total_value, {"debt": str(total_row.get("concept") or "")}
+
+    current_row = _latest_annual_row(us_gaap, CURRENT_DEBT_CONCEPTS)
+    noncurrent_row = _latest_annual_row(us_gaap, NONCURRENT_DEBT_CONCEPTS)
+    current_value = _row_value(current_row) or 0
+    noncurrent_value = _row_value(noncurrent_row) or 0
+    if current_value == 0 and noncurrent_value == 0:
+        return None, {}
+    return current_value + noncurrent_value, {
+        "current_debt": str(current_row.get("concept") if current_row else ""),
+        "noncurrent_debt": str(noncurrent_row.get("concept") if noncurrent_row else ""),
+    }
+
+
+def extract_sec_fundamentals(payload: dict[str, Any]) -> dict[str, Any]:
+    facts = payload.get("facts")
+    us_gaap = facts.get("us-gaap") if isinstance(facts, dict) else None
+    dei = facts.get("dei") if isinstance(facts, dict) else None
+    if not isinstance(us_gaap, dict):
+        return {"fundamental_status": "missing", "fundamental_error": "No us-gaap facts found."}
+
+    revenue_rows = _annual_rows_sorted(us_gaap, REVENUE_CONCEPTS)
+    net_income_rows = _annual_rows_sorted(us_gaap, NET_INCOME_CONCEPTS)
+    equity_rows = _annual_rows_sorted(us_gaap, EQUITY_CONCEPTS)
+    latest_revenue = _row_value(revenue_rows[0] if revenue_rows else None)
+    prior_revenue = _row_value(revenue_rows[1] if len(revenue_rows) > 1 else None)
+    latest_net_income = _row_value(net_income_rows[0] if net_income_rows else None)
+    latest_equity = _row_value(equity_rows[0] if equity_rows else None)
+    prior_equity = _row_value(equity_rows[1] if len(equity_rows) > 1 else None)
+    debt, debt_concepts = _debt_value(us_gaap)
+
+    share_taxonomy = dei if isinstance(dei, dict) else us_gaap
+    share_row = _latest_annual_row(share_taxonomy, SHARES_OUTSTANDING_CONCEPTS, ("shares",))
+    shares = _row_value(share_row)
+
+    average_equity = None
+    if latest_equity is not None and prior_equity is not None:
+        average_equity = (latest_equity + prior_equity) / 2
+    elif latest_equity is not None:
+        average_equity = latest_equity
+
+    concept_map = {
+        "revenue": str(revenue_rows[0].get("concept") if revenue_rows else ""),
+        "net_income": str(net_income_rows[0].get("concept") if net_income_rows else ""),
+        "equity": str(equity_rows[0].get("concept") if equity_rows else ""),
+        "shares_outstanding": str(share_row.get("concept") if share_row else ""),
+        **debt_concepts,
+    }
+    values = {
+        "revenue_growth_pct": _percent_change(latest_revenue, prior_revenue),
+        "net_margin_pct": (latest_net_income / latest_revenue) * 100 if latest_net_income is not None and latest_revenue else None,
+        "roe_pct": (latest_net_income / average_equity) * 100 if latest_net_income is not None and average_equity else None,
+        "debt_to_equity": debt / latest_equity if debt is not None and latest_equity else None,
+        "shares_outstanding": shares,
+        "sec_fundamental_concepts": concept_map,
+        "sec_fundamental_periods": {
+            "revenue": [row.get("fy") for row in revenue_rows[:2]],
+            "net_income": [row.get("fy") for row in net_income_rows[:1]],
+            "equity": [row.get("fy") for row in equity_rows[:2]],
+        },
+    }
+    usable = [
+        values["revenue_growth_pct"],
+        values["net_margin_pct"],
+        values["roe_pct"],
+        values["debt_to_equity"],
+        values["shares_outstanding"],
+    ]
+    values["fundamental_status"] = "success" if any(value is not None for value in usable) else "missing"
+    return values
 
 
 def _year_sort_key(value: str) -> tuple[int, str]:
@@ -237,6 +395,8 @@ def extract_sec_cash_flow(payload: dict[str, Any], ticker: str = "") -> dict[str
         if len(periods) >= 5:
             break
 
+    fundamentals = extract_sec_fundamentals(payload)
+
     if not periods:
         return {
             "ticker": ticker.upper(),
@@ -251,6 +411,7 @@ def extract_sec_cash_flow(payload: dict[str, Any], ticker: str = "") -> dict[str
                 concept for concept in CAPEX_CONCEPTS if concept in us_gaap
             ],
             "annual_periods": [],
+            **fundamentals,
         }
 
     fcf_values = [period["free_cash_flow"] for period in periods]
@@ -279,6 +440,7 @@ def extract_sec_cash_flow(payload: dict[str, Any], ticker: str = "") -> dict[str
         "confidence": confidence,
         "source": "SEC EDGAR XBRL",
         "extracted_at": datetime.now(timezone.utc).isoformat(),
+        **fundamentals,
     }
 
 
